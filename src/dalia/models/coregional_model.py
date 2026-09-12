@@ -36,6 +36,18 @@ class CoregionalModel(Model):
         """Initializes the model."""
         self.models: list[Model] = models
 
+        # Linear constraints are not supported on coregional models yet: the latent
+        # variables are permuted (permutation_latent_variables), so submodel constraints
+        # cannot be embedded at the plain submodel offsets.
+        for model in self.models:
+            if getattr(model, "constraints", None) is not None:
+                raise NotImplementedError(
+                    "Linear constraints are not supported in CoregionalModel."
+                )
+        self.constraints = None
+        self.constraint_prior_rows = None
+        self.intrinsic_submodels = []
+
         # Check the coregionalization type (Spacial or SpatioTemporal)
         self.coregionalization_type: str
         self.n_models: int = coregional_model_config.n_models
@@ -288,6 +300,14 @@ class CoregionalModel(Model):
         )
 
         self.construct_Q_prior()
+
+    @property
+    def Q_prior_solver(self) -> sp.sparse.spmatrix:
+        """No intrinsic blocks in coregional models: the solver factorizes Q_prior itself."""
+        return self.Q_prior
+
+    def logdet_Q_prior_generalized(self) -> float:
+        return 0.0
 
     def construct_Q_prior(self) -> sp.sparse.spmatrix:
         # number of random effects per model

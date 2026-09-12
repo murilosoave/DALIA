@@ -16,6 +16,9 @@ from dalia.configs.priorhyperparameters_config import (
     PenalizedComplexityPriorHyperparametersConfig,
     GammaPriorHyperparametersConfig,
 )
+from dalia.configs.constraints_config import LinearConstraintConfig
+from dalia.configs.constraints_config import parse_config as parse_constraint_config
+from dalia.core.constraints import LinearConstraint
 from dalia.core.likelihood import Likelihood
 from dalia.core.prior_hyperparameters import PriorHyperparameters
 from dalia.core.submodel import SubModel
@@ -34,7 +37,7 @@ from dalia.submodels import (
     SpatioTemporalSubModel,
     AR1SubModel,
 )
-from dalia.utils import add_str_header, boxify, scaled_logit
+from dalia.utils import add_str_header, boxify, get_host, scaled_logit
 from dalia.utils.scalar_ndarray import ensure_scalar
 
 
@@ -45,9 +48,20 @@ class Model(ABC):
         self,
         submodels: list[SubModel],
         likelihood_config: LikelihoodConfig,
+        constraints: list[dict | LinearConstraintConfig] | None = None,
         **kwargs,
     ) -> None:
-        """Initializes the model."""
+        """Initializes the model.
+
+        Parameters
+        ----------
+        submodels : list[SubModel]
+        likelihood_config : LikelihoodConfig
+        constraints : list of dict | LinearConstraintConfig, optional
+            Model-level linear constraints ``A x = e`` on the full latent vector
+            (``A`` of shape ``(k, n_latent_parameters)``). Submodel constraints are
+            declared in the submodel configs and embedded automatically.
+        """
         self.modeltype = kwargs.get("modeltype", "Default Model")
 
         # Check the order of the submodels, we want the SpatioTemporalSubModel first
@@ -248,6 +262,11 @@ class Model(ABC):
 
         self.x: NDArray = xp.zeros(self.n_latent_parameters)
 
+        # --- Linear constraints A x = e: submodel constraints embedded at their block
+        # offset, model-level constraints on the full latent vector, all stacked and
+        # validated before any solver buffer is allocated.
+        self._init_constraints(constraints)
+
         # check if all a are sparse -> if not construct dense a
         if all(sp.sparse.issparse(submodel.a) for submodel in self.submodels):
             data = []
@@ -395,6 +414,12 @@ class Model(ABC):
         # --- Recurrent variables
         self.Q_prior = None
         self.Q_prior_data_mapping = [0]
+        # Q_prior with intrinsic blocks replaced by the identity: what the solver
+        # factorizes for the prior log-determinant and inverse action (see
+        # construct_Q_prior). Identical to Q_prior when no submodel is intrinsic.
+        self.Q_prior_solver = None
+        self._solver_zero_ranges: list[tuple[int, int]] = []
+        self._solver_diag_positions = None
         self.Q_conditional = None
         self.Q_conditional_data_mapping = [0]
 
@@ -433,9 +458,14 @@ class Model(ABC):
 
     ########################################################################
 
-    def construct_Q_prior(self) -> sp.sparse.spmatrix:
+    def _submodel_theta_kwargs(self, i: int) -> dict:
+        """Hyperparameters of submodel ``i`` in the external scale, keyed by name."""
         kwargs = {}
+        for hp_idx in range(self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]):
+            kwargs[self.theta_keys[hp_idx]] = float(self.theta_external[hp_idx])
+        return kwargs
 
+    def construct_Q_prior(self) -> sp.sparse.spmatrix:
         if self.Q_prior is None:
             # During the first construction of Q_prior, we allocate the memory for
             # the data and the mapping of each submodel's to the Q prior matrix.
@@ -443,44 +473,10 @@ class Model(ABC):
             cols = []
             data = []
 
-            ## TODO: improve the if / elif statements
             for i, submodel in enumerate(self.submodels):
-                if isinstance(submodel, SpatioTemporalSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, SpatialSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, BrainiacSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, AR1SubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, RegressionSubModel):
-                    ...
-
-                submodel_Q_prior = submodel.construct_Q_prior(**kwargs)
+                submodel_Q_prior = submodel.construct_Q_prior(
+                    **self._submodel_theta_kwargs(i)
+                )
 
                 rows.append(
                     submodel_Q_prior.row
@@ -501,50 +497,70 @@ class Model(ABC):
                 shape=(self.n_latent_parameters, self.n_latent_parameters),
             )
 
+            self._init_Q_prior_solver()
+
         else:
             for i, submodel in enumerate(self.submodels):
-                if isinstance(submodel, RegressionSubModel):
-                    ...
-                elif isinstance(submodel, SpatioTemporalSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, SpatialSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, BrainiacSubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, AR1SubModel):
-                    for hp_idx in range(
-                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
-                    ):
-                        kwargs[self.theta_keys[hp_idx]] = float(
-                            self.theta_external[hp_idx]
-                        )
-                        # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-
-                submodel_Q_prior = submodel.construct_Q_prior(**kwargs)
+                submodel_Q_prior = submodel.construct_Q_prior(
+                    **self._submodel_theta_kwargs(i)
+                )
 
                 self.Q_prior.data[
                     self.Q_prior_data_mapping[i] : self.Q_prior_data_mapping[i + 1]
                 ] = submodel_Q_prior.data
 
+        self._update_Q_prior_solver()
+
         return self.Q_prior
+
+    def _init_Q_prior_solver(self) -> None:
+        """Locate, once, the CSC data ranges of the intrinsic blocks and their diagonal."""
+        if not self.intrinsic_submodels:
+            self.Q_prior_solver = self.Q_prior
+            return
+
+        indptr = np.asarray(get_host(self.Q_prior.indptr))
+        indices = np.asarray(get_host(self.Q_prior.indices))
+        col_of_position = np.repeat(np.arange(self.n_latent_parameters), np.diff(indptr))
+
+        diag_positions = []
+        for i in self.intrinsic_submodels:
+            lo, hi = self.latent_parameters_idx[i], self.latent_parameters_idx[i + 1]
+            start, stop = int(indptr[lo]), int(indptr[hi])
+            self._solver_zero_ranges.append((start, stop))
+            positions = np.arange(start, stop)
+            on_diagonal = positions[indices[start:stop] == col_of_position[start:stop]]
+            if on_diagonal.size != hi - lo:
+                raise ValueError(
+                    f"The prior precision of intrinsic submodel {i} does not store its "
+                    "full diagonal; cannot substitute the identity for the solver."
+                )
+            diag_positions.append(on_diagonal)
+        self._solver_diag_positions = xp.asarray(np.concatenate(diag_positions))
+
+        self.Q_prior_solver = sp.sparse.csc_matrix(
+            (self.Q_prior.data.copy(), self.Q_prior.indices, self.Q_prior.indptr),
+            shape=self.Q_prior.shape,
+        )
+
+    def _update_Q_prior_solver(self) -> None:
+        if self.Q_prior_solver is self.Q_prior:
+            return
+        data = self.Q_prior_solver.data
+        data[:] = self.Q_prior.data
+        for start, stop in self._solver_zero_ranges:
+            data[start:stop] = 0.0
+        data[self._solver_diag_positions] = 1.0
+
+    def logdet_Q_prior_generalized(self) -> float:
+        """Sum of the generalized log-determinants of the intrinsic submodels' prior
+        precisions (up to theta-independent constants). Zero when none is intrinsic."""
+        logdet = 0.0
+        for i in self.intrinsic_submodels:
+            logdet += self.submodels[i].logdet_Q_prior_generalized(
+                **self._submodel_theta_kwargs(i)
+            )
+        return logdet
 
     def construct_Q_conditional(
         self,
@@ -710,19 +726,21 @@ class Model(ABC):
             "Number of Hyperparameters",
             "Number of Latent Parameters",
             "Number of Observations",
+            "Number of Constraints",
             "Type of Likelihood",
         ]
         values = [
             self.n_hyperparameters,
             self.n_latent_parameters,
             self.n_observations,
+            0 if self.constraints is None else self.constraints.k,
             self.likelihood_config.type.capitalize(),
         ]
 
         model_table = tabulate(
             [headers, values],
             tablefmt="fancy_grid",
-            colalign=("center", "center", "center", "center"),
+            colalign=("center",) * len(headers),
         )
 
         # Add the header title
@@ -806,3 +824,73 @@ class Model(ABC):
     def total_number_fixed_effects(self) -> int:
         """Get the number of fixed effects."""
         return self.n_fixed_effects
+
+    def _init_constraints(
+        self, model_constraints: list[dict | LinearConstraintConfig] | None
+    ) -> None:
+        """Assemble and validate the linear constraints of the model.
+
+        Sets ``self.constraints`` (a single stacked ``LinearConstraint`` or None),
+        ``self.intrinsic_submodels`` (indices) and ``self.constraint_prior_rows`` (host
+        boolean mask of the rows that enter the prior correction: all rows except the
+        automatic null-space rows of intrinsic submodels, whose prior is evaluated as
+        the proper density restricted to the constraint subspace).
+        """
+        self.intrinsic_submodels: list[int] = [
+            i for i, submodel in enumerate(self.submodels) if submodel.intrinsic
+        ]
+
+        stacked: list[LinearConstraint] = []
+        is_null_space_row: list[bool] = []
+        null_space_rows_of: dict[int, list[int]] = {}
+        for i, submodel in enumerate(self.submodels):
+            offset = self.latent_parameters_idx[i]
+            for constraint in submodel.constraints:
+                stacked.append(constraint.embed(offset, self.n_latent_parameters))
+                is_null_space_row += [False] * constraint.k
+            if submodel.null_space_constraint is not None:
+                first = len(is_null_space_row)
+                stacked.append(
+                    submodel.null_space_constraint.embed(offset, self.n_latent_parameters)
+                )
+                null_space_rows_of[i] = list(
+                    range(first, first + submodel.null_space_constraint.k)
+                )
+                is_null_space_row += [True] * submodel.null_space_constraint.k
+        for j, config in enumerate(model_constraints or []):
+            constraint = LinearConstraint.from_config(
+                parse_constraint_config(config),
+                n=self.n_latent_parameters,
+                label=f"model constraint {j}",
+            )
+            stacked.append(constraint)
+            is_null_space_row += [False] * constraint.k
+
+        if not stacked:
+            self.constraints: LinearConstraint | None = None
+            self.constraint_prior_rows = None
+            return
+
+        self.constraints = LinearConstraint.stack(stacked)
+        is_null_space_row = np.asarray(is_null_space_row, dtype=bool)
+        self.constraint_prior_rows = ~is_null_space_row
+
+        # Rows on an intrinsic block must be exactly its automatic null-space rows.
+        for i in self.intrinsic_submodels:
+            lo, hi = self.latent_parameters_idx[i], self.latent_parameters_idx[i + 1]
+            touching = np.flatnonzero(self.constraints.support_mask(lo, hi))
+            foreign = [r for r in touching if r not in null_space_rows_of[i]]
+            if foreign:
+                names = ", ".join(self.constraints.labels[r] for r in foreign)
+                raise NotImplementedError(
+                    f"Constraints on intrinsic submodel {i} other than its automatic "
+                    f"null-space constraints are not supported: {names}."
+                )
+            N = np.asarray(self.submodels[i].null_space(), dtype=float)
+            A_int = get_host(self.constraints.subset(null_space_rows_of[i]).A[:, lo:hi].toarray())
+            if np.linalg.matrix_rank(A_int @ N) != N.shape[1]:
+                raise ValueError(
+                    f"null_space() of intrinsic submodel {i} is rank deficient."
+                )
+
+        self.constraints.validate()

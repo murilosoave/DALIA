@@ -126,13 +126,19 @@ class LinearConstraint:
         A = sp.sparse.hstack([left, self.A, right], format="csr")
         return LinearConstraint._from_backend(A, self.e, self.labels)
 
-    def subset(self, rows) -> "LinearConstraint":
-        """The constraint made of the given rows (boolean mask or index array)."""
-        rows = np.asarray(get_host(rows))
+    @staticmethod
+    def _host_index(rows) -> np.ndarray:
+        """Row selector (list, boolean mask or index array, host or device) as host indices."""
+        rows = np.asarray(rows if isinstance(rows, (list, tuple)) else get_host(rows))
         if rows.dtype == bool:
             rows = np.flatnonzero(rows)
-        A = self.A[xp.asarray(rows, dtype=xp.int64)] if len(rows) > 0 else sp.sparse.csr_matrix((0, self.n))
-        e = self.e[xp.asarray(rows, dtype=xp.int64)]
+        return rows.astype(np.int64)
+
+    def subset(self, rows) -> "LinearConstraint":
+        """The constraint made of the given rows (list, boolean mask or index array)."""
+        rows = self._host_index(rows)
+        A = self.A[xp.asarray(rows)] if len(rows) > 0 else sp.sparse.csr_matrix((0, self.n))
+        e = self.e[xp.asarray(rows)]
         return LinearConstraint._from_backend(A, e, [self.labels[i] for i in rows])
 
     def support_mask(self, start: int, stop: int) -> np.ndarray:
@@ -218,9 +224,7 @@ class LinearConstraint:
         if rows is None:
             buffer[self._AT_rows, self._AT_cols] = self._AT_data
             return
-        rows = np.asarray(get_host(rows))
-        if rows.dtype == bool:
-            rows = np.flatnonzero(rows)
+        rows = self._host_index(rows)
         position = -np.ones(self.k, dtype=np.int64)
         position[rows] = np.arange(len(rows))
         cols_host = get_host(self._AT_cols)
