@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 from typing_extensions import Annotated
 
 from dalia.__init__ import ArrayLike, xp
+from dalia.configs.constraints_config import LinearConstraintConfig
 from dalia.configs.priorhyperparameters_config import (
     BetaPriorHyperparametersConfig,
     GaussianMVNPriorHyperparametersConfig,
@@ -23,6 +24,10 @@ class SubModelConfig(BaseModel, ABC):
     # Input folder for this specific submodel
     input_dir: str = None
     type: Literal["spatio_temporal", "spatial", "regression", "brainiac", "ar1"] = None
+
+    # Linear equality constraints A x = e on this submodel's latent parameters.
+    # Dicts are validated into LinearConstraintConfig by pydantic.
+    constraints: list[LinearConstraintConfig] = []
 
     @abstractmethod
     def read_hyperparameters(self) -> tuple[ArrayLike, list]: ...
