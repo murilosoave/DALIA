@@ -37,6 +37,10 @@ if __name__ == "__main__":
         # initial guess on the precision
         "tau": 3, # has to be positive
         "ph_tau": {"type": "gamma", "alpha": 2.0, "beta": 1.0},
+        # Linear constraints A x = e on the AR1 block. "sum_to_zero" expands to
+        # A = [1, ..., 1], e = [0]; a general one is {"type": "linear", "A": A, "e": e}
+        # with A of shape (k, n_latent) and e of shape (k,).
+        "constraints": [{"type": "sum_to_zero"}],
         # initial guess on the variance
         # "sigma2": 0.33, # has to be positive
         # "ph_sigma2": {"type": "invgamma", "alpha": 2.0, "beta": 1.0}, 
@@ -143,6 +147,10 @@ if __name__ == "__main__":
     print_msg(
         "Mean of the fixed effects:\n",
         results["x"][-model.submodels[-1].n_fixed_effects :],
+    )
+    print_msg(
+        "sum(x_ar1) at the mode (sum-to-zero constraint): ",
+        f"{float(xp.sum(results['x'][: model.submodels[0].n_latent_parameters])):.3e}",
     )
 
     # print("x:          ", results["x"])

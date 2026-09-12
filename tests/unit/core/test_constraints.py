@@ -2,9 +2,7 @@
 
 import numpy as np
 import pytest
-from scipy.sparse import issparse
-
-from dalia import xp
+from dalia import sp, xp
 from dalia.configs.constraints_config import parse_config
 from dalia.core.constraints import LinearConstraint
 from dalia.utils import get_host
@@ -25,7 +23,7 @@ def _host(a):
 def test_sum_to_zero():
     c = LinearConstraint.sum_to_zero(4)
     assert c.k == 1 and c.n == 4
-    assert issparse(c.A)
+    assert sp.sparse.issparse(c.A)
     np.testing.assert_array_equal(_host(c.A.toarray()), np.ones((1, 4)))
     np.testing.assert_array_equal(_host(c.e), np.zeros(1))
 
@@ -132,7 +130,7 @@ def test_correct_matches_closed_form_and_is_feasible():
     c = LinearConstraint(A, e)
     Sigma = np.linalg.inv(Q)
     V, W = Sigma @ A.T, A @ Sigma @ A.T
-    L = LinearConstraint.factor_W(xp.asarray(W))
+    L = c.factor_W(xp.asarray(W))
     x_c = _host(c.correct(xp.asarray(x), xp.asarray(V), L))
     np.testing.assert_allclose(A @ x_c - e, 0.0, atol=1e-12)
     expected = x - Sigma @ A.T @ np.linalg.solve(W, A @ x - e)
@@ -140,18 +138,21 @@ def test_correct_matches_closed_form_and_is_feasible():
 
 
 def test_factor_W_rejects_singular_W():
+    c = LinearConstraint(np.eye(2), np.zeros(2))
     with pytest.raises(ValueError, match="positive definite"):
-        LinearConstraint.factor_W(xp.asarray(np.array([[1.0, 1.0], [1.0, 1.0]])))
+        c.factor_W(xp.asarray(np.array([[1.0, 1.0], [1.0, 1.0]])))
 
 
 def test_variance_correction_matches_dense_in_chunks():
     n, k = 7, 2
     Q, A = _spd(n), rng.random((k, n))
+    A[1] *= 1e4  # badly scaled row
+    c = LinearConstraint(A, np.zeros(k))
     Sigma = np.linalg.inv(Q)
     V, W = Sigma @ A.T, A @ Sigma @ A.T
-    L = LinearConstraint.factor_W(xp.asarray(W))
+    L = c.factor_W(xp.asarray(W))
     Sigma_c = Sigma - V @ np.linalg.solve(W, V.T)
-    got = np.diag(Sigma) - _host(LinearConstraint.variance_correction(xp.asarray(V), L, chunk_rows=3))
+    got = np.diag(Sigma) - _host(c.variance_correction(xp.asarray(V), L, chunk_rows=3))
     np.testing.assert_allclose(got, np.diag(Sigma_c), rtol=1e-12)
 
 
@@ -164,7 +165,7 @@ def test_log_correction_matches_eigen_reference():
     c = LinearConstraint(A, e)
     Sigma = np.linalg.inv(Q)
     V, W = Sigma @ A.T, A @ Sigma @ A.T
-    L = LinearConstraint.factor_W(xp.asarray(W))
+    L = c.factor_W(xp.asarray(W))
     x_c = _host(c.correct(xp.asarray(x_unc), xp.asarray(V), L))
     mu_c = _host(c.correct(xp.asarray(mu), xp.asarray(V), L))
 
@@ -183,5 +184,5 @@ def test_log_correction_matches_eigen_reference():
         - 0.5 * (x_c - mu) @ Q @ (x_c - mu)
     )
     constant = -0.5 * np.linalg.slogdet(A @ A.T)[1] + 0.5 * k * np.log(2 * np.pi)
-    got = log_p_x + constant + float(LinearConstraint.log_correction(L, xp.asarray(A @ x_c - A @ mu)))
+    got = log_p_x + constant + float(c.log_correction(L, xp.asarray(A @ x_c - A @ mu)))
     np.testing.assert_allclose(got, reference, rtol=1e-10)

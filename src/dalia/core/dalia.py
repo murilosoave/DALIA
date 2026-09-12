@@ -206,6 +206,14 @@ class DALIA:
         self._constraint_rhs: NDArray | None = None
         self._constraint_solves_star: tuple[NDArray, NDArray] | None = None
         if self.model.constraints is not None:
+            if isinstance(self.solver, DistSerinvSolver):
+                # The distributed 'bt' solve (needed for A Q_prior^{-1} A^T) returns
+                # wrong spatio-temporal rows in this version (checked on pst_small with
+                # 2 ranks); the tip rows and the log-determinant are correct.
+                raise NotImplementedError(
+                    "Linear constraints are not supported with the distributed serinv "
+                    "solver (min_processes > 1) yet; use min_processes = 1."
+                )
             self._constraint_rhs = xp.empty(
                 (self.model.n_latent_parameters, self.model.constraints.k + 1),
                 dtype=xp.float64,
@@ -1296,7 +1304,7 @@ class DALIA:
         if self.model.constraints is not None:
             # diag(Sigma*) = diag(Q^{-1}) - diag(V W^{-1} V^T)
             V, L = self._constraint_solves_star
-            marginal_variances = marginal_variances - LinearConstraint.variance_correction(V, L)
+            marginal_variances = marginal_variances - self.model.constraints.variance_correction(V, L)
 
         return marginal_variances
 
@@ -1366,7 +1374,7 @@ class DALIA:
                     aV = aV.toarray()
                 marginal_variances_observations = (
                     marginal_variances_observations
-                    - LinearConstraint.variance_correction(aV, L)
+                    - self.model.constraints.variance_correction(aV, L)
                 )
 
             return marginal_variances_observations
@@ -1423,7 +1431,7 @@ class DALIA:
         x = solution[:, 0] if rhs is not None else None
         V = solution[:, first:]
         W = constraints.A[xp.asarray(rows)] @ V
-        L = LinearConstraint.factor_W(W)
+        L = constraints.factor_W(W, rows=rows)
         return x, V, L
 
     def _inner_iteration(
@@ -1503,9 +1511,14 @@ class DALIA:
             counter += 1
 
         if constraints is not None:
+            # Remove the round-off of the projected updates (a minimum-norm projection,
+            # exact up to the k x k solve) and keep eta consistent with the returned x.
+            # The move is of the order of the solve round-off, far below eps_inner_iteration.
+            x_star = constraints.project(x_star)
+            eta[:] = self.model.a @ x_star
             residual = xp.linalg.norm(constraints.residual(x_star))
             tolerance = 1e-8 * (1.0 + xp.linalg.norm(constraints.e))
-            if residual > tolerance:
+            if not bool(residual <= tolerance):
                 raise ValueError(
                     f"Inner iteration returned an infeasible x: ||A x - e|| = {float(residual):.3e}."
                 )
@@ -1557,7 +1570,7 @@ class DALIA:
             rows = self.model.constraint_prior_rows
             _, _, L = self._solve_constraints(sparsity="bt", rows=rows)
             e_rows = constraints.e[xp.asarray(np.flatnonzero(rows))]
-            log_prior_latent_parameters += LinearConstraint.log_correction(L, e_rows)
+            log_prior_latent_parameters += constraints.log_correction(L, e_rows, rows=rows)
 
         return log_prior_latent_parameters
 
@@ -1636,6 +1649,6 @@ class DALIA:
                 r = xp.zeros(constraints.k, dtype=xp.float64)
             else:
                 r = -constraints.residual(x_mean)  # e - A x_mean
-            log_conditional += LinearConstraint.log_correction(constraint_factor, r)
+            log_conditional += constraints.log_correction(constraint_factor, r)
 
         return log_conditional

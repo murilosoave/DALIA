@@ -55,12 +55,25 @@ class LinearConstraint:
         )
         if len(self.labels) != self.k:
             raise ValueError("One label per constraint row is required.")
+        self._G_chol = None  # Cholesky factor of A A^T (lazy)
+        if self.k == 0:
+            # cupyx cannot transpose/reduce a zero-row matrix
+            self._AT_rows = xp.zeros(0, dtype=xp.int32)
+            self._AT_cols = xp.zeros(0, dtype=xp.int32)
+            self._AT_data = xp.zeros(0, dtype=xp.float64)
+            self._row_scale = xp.zeros(0, dtype=xp.float64)
+            return
         # COO of A^T, used to refill dense (n, k) right-hand sides without a dense copy of A^T.
         AT = self.A.T.tocoo()
         self._AT_rows = AT.row
         self._AT_cols = AT.col
         self._AT_data = AT.data
-        self._G_chol = None  # Cholesky factor of A A^T (lazy)
+        # Row scales d_i = 1 / ||A_i||: W = A Q^{-1} A^T is factorized as D W D so that
+        # rows of very different norms (a sum over thousands of nodes next to a single
+        # coefficient) do not degrade its conditioning. Zero rows keep scale 1 and are
+        # rejected by validate().
+        row_norms = xp.sqrt(xp.asarray(self.A.multiply(self.A).sum(axis=1)).ravel())
+        self._row_scale = xp.where(row_norms > 0, 1.0 / xp.maximum(row_norms, 1e-300), 1.0)
 
     @classmethod
     def _from_backend(cls, A, e: NDArray, labels: list[str]) -> "LinearConstraint":
@@ -159,7 +172,7 @@ class LinearConstraint:
         reported with their labels.
         """
         row_norms = get_host(xp.sqrt(xp.asarray(self.A.multiply(self.A).sum(axis=1)).ravel()))
-        zero_rows = np.flatnonzero(row_norms == 0.0)
+        zero_rows = np.flatnonzero(np.asarray(row_norms) == 0.0)
         if zero_rows.size > 0:
             names = ", ".join(self.labels[i] for i in zero_rows)
             raise ValueError(f"Constraint rows with all-zero coefficients: {names}.")
@@ -235,18 +248,32 @@ class LinearConstraint:
         ] = self._AT_data[xp.asarray(keep)]
 
     # --- Small dense algebra on W = A V ------------------------------------
+    #
+    # All routines work on the row-scaled W_s = D W D (D = diag(row scales)) whose
+    # Cholesky factor L is produced by factor_W. ``rows`` selects the subset of
+    # constraint rows the factor refers to (all rows by default).
 
-    @staticmethod
-    def factor_W(W: NDArray) -> NDArray:
-        """Cholesky factor ``L`` (lower) of ``W = A Q^{-1} A^T``."""
-        W = 0.5 * (W + W.T)
+    def _scales(self, rows=None) -> NDArray:
+        if rows is None:
+            return self._row_scale
+        return self._row_scale[xp.asarray(self._host_index(rows))]
+
+    def factor_W(self, W: NDArray, rows=None) -> NDArray:
+        """Cholesky factor ``L`` (lower) of the row-scaled ``D W D``, ``W = A Q^{-1} A^T``."""
+        d = self._scales(rows)
+        W = 0.5 * (W + W.T) * d[:, None] * d[None, :]
+        message = (
+            "A Q^{-1} A^T is not positive definite: the constraints are numerically "
+            "dependent for this precision matrix."
+        )
         try:
-            return xp.linalg.cholesky(W)
-        except Exception as error:  # numpy LinAlgError / cupy equivalents
-            raise ValueError(
-                "A Q^{-1} A^T is not positive definite: the constraints are numerically "
-                "dependent for this precision matrix."
-            ) from error
+            L = xp.linalg.cholesky(W)
+        except Exception as error:  # numpy raises LinAlgError
+            raise ValueError(message) from error
+        # cupy returns NaNs instead of raising
+        if not bool(xp.all(xp.isfinite(L))) or not bool(xp.all(xp.diag(L) > 0)):
+            raise ValueError(message)
+        return L
 
     @staticmethod
     def solve_spd(L: NDArray, r: NDArray) -> NDArray:
@@ -254,32 +281,39 @@ class LinearConstraint:
         y = sp.linalg.solve_triangular(L, r, lower=True)
         return sp.linalg.solve_triangular(L, y, lower=True, trans="T")
 
-    def correct(self, x: NDArray, V: NDArray, L: NDArray) -> NDArray:
-        """Constrained mean/mode: ``x - V W^{-1} (A x - e)``."""
-        return x - V @ self.solve_spd(L, self.residual(x))
+    def solve_W(self, L: NDArray, r: NDArray, rows=None) -> NDArray:
+        """``W^{-1} r`` from the scaled factor: ``D (D W D)^{-1} D r``."""
+        d = self._scales(rows)
+        return d * self.solve_spd(L, d * r)
 
-    @staticmethod
-    def log_correction(L: NDArray, r: NDArray) -> float:
-        """``0.5 log|W| + 0.5 r^T W^{-1} r`` for ``r = A x - A mu`` and ``W = L L^T``.
+    def correct(self, x: NDArray, V: NDArray, L: NDArray) -> NDArray:
+        """Constrained mean/mode: ``x - V W^{-1} (A x - e)`` (all rows)."""
+        return x - V @ self.solve_W(L, self.residual(x))
+
+    def log_correction(self, L: NDArray, r: NDArray, rows=None) -> float:
+        """``0.5 log|W| + 0.5 r^T W^{-1} r`` for ``r = A x - A mu`` and the scaled factor ``L``.
 
         The constant ``-0.5 log|A A^T| + (k/2) log(2 pi)`` of the constrained density is
         omitted: it appears identically in the prior and conditional terms of the
         objective and cancels.
         """
-        logdet_W = 2.0 * xp.sum(xp.log(xp.diag(L)))
-        z = sp.linalg.solve_triangular(L, r, lower=True)
+        d = self._scales(rows)
+        logdet_W = 2.0 * xp.sum(xp.log(xp.diag(L))) - 2.0 * xp.sum(xp.log(d))
+        z = sp.linalg.solve_triangular(L, d * r, lower=True)
         return 0.5 * logdet_W + 0.5 * (z @ z)
 
-    @staticmethod
-    def variance_correction(V: NDArray, L: NDArray, chunk_rows: int = 1 << 18) -> NDArray:
+    def variance_correction(
+        self, V: NDArray, L: NDArray, rows=None, chunk_rows: int = 1 << 18
+    ) -> NDArray:
         """``diag(V W^{-1} V^T)`` computed in row chunks; subtract from ``diag(Q^{-1})``.
 
         Work is ``O(n k^2)``; temporary memory is ``chunk_rows x k``.
         """
+        d = self._scales(rows)
         n = V.shape[0]
         out = xp.empty(n, dtype=xp.float64)
         for start in range(0, n, chunk_rows):
             stop = min(start + chunk_rows, n)
-            Z = sp.linalg.solve_triangular(L, V[start:stop].T, lower=True)  # (k, m)
+            Z = sp.linalg.solve_triangular(L, (V[start:stop] * d[None, :]).T, lower=True)
             out[start:stop] = xp.sum(Z * Z, axis=0)
         return out

@@ -112,11 +112,12 @@ def test_prior_solve_and_logdet_agree_across_solvers(case):
 
     Q_p = _host(model.construct_Q_prior().toarray())
     V_ref = np.linalg.solve(Q_p, A.T)
+    d = _host(model.constraints._row_scale)  # L factors the row-scaled D W D
     for solver in SOLVERS:
         logdet, V, L = results[solver]
         np.testing.assert_allclose(logdet, np.linalg.slogdet(Q_p)[1], rtol=1e-10)
         np.testing.assert_allclose(V, V_ref, rtol=1e-8, atol=1e-12)
-        np.testing.assert_allclose(L @ L.T, A @ V_ref, rtol=1e-8)
+        np.testing.assert_allclose(L @ L.T, d[:, None] * (A @ V_ref) * d[None, :], rtol=1e-8)
 
 
 def test_bt_solve_with_bt_sized_rhs_still_works():

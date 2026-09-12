@@ -32,6 +32,25 @@ python gst_small/run.py
 
 Additionaly, *slurms* scripts to run the examples on different HPC clusters are provided.
 
+### Linear constraints
+
+Any submodel accepts `"constraints": [...]` in its config dict, and `Model(..., constraints=[...])`
+takes constraints on the full latent vector. Two forms are supported:
+
+- `{"type": "sum_to_zero"}` — `sum(x) = 0` over the submodel block,
+- `{"type": "linear", "A": A, "e": e}` — general `A x = e`, `A` of shape `(k, n)` (list, numpy
+  array or scipy sparse matrix), `e` of shape `(k,)`.
+
+Constraints are handled by conditioning (Rue & Held, *GMRFs*, Sec. 2.3): the sparsity of the
+precision matrices is unchanged and the extra cost per objective evaluation is one batched
+`(n, k)` solve per factorization plus an `8·n·(k+1)`-byte workspace, so keep `k` small relative
+to the block size. The assembled constraints are validated (finite, no zero rows, independent).
+Submodels whose class sets `intrinsic = True` (improper GMRFs such as random walks) declare their
+null space and are constrained on it automatically; their prior is evaluated exactly on the
+constraint subspace, without any regularization of the precision. Constraints are not yet
+supported with the distributed serinv solver (`min_processes > 1`) nor with `CoregionalModel`.
+See `examples/g_ar1/run.py` for a sum-to-zero example.
+
 ## Benchmarks
 
 ... work in progress
