@@ -36,6 +36,7 @@ from dalia.submodels import (
     SpatialSubModel,
     SpatioTemporalSubModel,
     AR1SubModel,
+    RW1SubModel,
 )
 from dalia.utils import add_str_header, boxify, get_host, scaled_logit
 from dalia.utils.scalar_ndarray import ensure_scalar
@@ -210,6 +211,28 @@ class Model(ABC):
                     )
                 else:
                     raise ValueError("Unknown prior hyperparameter type for ph_tau")
+
+            elif isinstance(submodel, RW1SubModel):
+                if isinstance(
+                    submodel.config.ph_tau, GaussianPriorHyperparametersConfig
+                ):
+                    self.prior_hyperparameters.append(
+                        GaussianPriorHyperparameters(
+                            config=submodel.config.ph_tau,
+                        )
+                    )
+                elif isinstance(
+                    submodel.config.ph_tau, GammaPriorHyperparametersConfig
+                ):
+                    self.prior_hyperparameters.append(
+                        GammaPriorHyperparameters(
+                            config=submodel.config.ph_tau,
+                        )
+                    )
+                else:
+                    raise ValueError(
+                        "RW1 submodel: ph_tau must be a gaussian or gamma prior."
+                    )
 
             elif isinstance(submodel, BrainiacSubModel):
                 # h2 hyperparameters

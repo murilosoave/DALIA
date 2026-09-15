@@ -8,7 +8,7 @@ from dalia import xp
 from dalia.configs import dalia_config, likelihood_config, submodels_config
 from dalia.core.dalia import DALIA
 from dalia.core.model import Model
-from dalia.submodels import AR1SubModel, RegressionSubModel
+from dalia.submodels import AR1SubModel, RegressionSubModel, RW1SubModel
 from dalia.utils import get_host
 from tests.constraints_utils import (
     N_LATENT_AR1,
@@ -16,6 +16,7 @@ from tests.constraints_utils import (
     likelihood_dict,
     make_dataset,
     regression_dict,
+    rw1_dict,
 )
 
 N_TOTAL = N_LATENT_AR1 + 1
@@ -32,7 +33,8 @@ def _host(a):
 
 
 def build(root, likelihood, ar1_constraints=None, model_constraints=None, ar1_cls=AR1SubModel, solver="dense"):
-    ar1 = ar1_cls(config=submodels_config.parse_config(ar1_dict(root, constraints=ar1_constraints or [])))
+    block_dict = rw1_dict if ar1_cls is RW1SubModel else ar1_dict
+    ar1 = ar1_cls(config=submodels_config.parse_config(block_dict(root, constraints=ar1_constraints or [])))
     reg = RegressionSubModel(config=submodels_config.parse_config(regression_dict(root)))
     model = Model(
         submodels=[ar1, reg],
@@ -130,6 +132,50 @@ def test_workspace_is_allocated_once(tmp_path):
     buffer = dalia._constraint_rhs
     dalia._evaluate_f(model.theta_internal)
     assert dalia._constraint_rhs is buffer
+
+
+# --- Intrinsic submodel (exact restricted prior, no regularization) --------------
+
+
+def dense_rw1_reference(model):
+    """-log p(y | theta, sum(x_rw1) = 0) - log p(theta), up to theta-independent constants.
+
+    The improper RW1 prior restricted to {1^T x = 0} is proper; with an orthonormal basis
+    B of that subspace (identity on the regression block), z = B^T x has prior
+    N(0, (B^T Q_p B)^{-1}) and y = a B z + noise: a standard Gaussian marginal.
+    """
+    prec_o = float(model.theta_external[-1])
+    a = _host(model.a.toarray())
+    Q_p = _host(model.construct_Q_prior().toarray())
+    n_int = N_LATENT_AR1
+    B_int = np.linalg.svd(np.ones((1, n_int)))[2][1:].T  # orthonormal basis of {1^T x = 0}
+    B = np.zeros((Q_p.shape[0], B_int.shape[1] + Q_p.shape[0] - n_int))
+    B[:n_int, : B_int.shape[1]] = B_int
+    B[n_int:, B_int.shape[1] :] = np.eye(Q_p.shape[0] - n_int)
+    Q_z = B.T @ Q_p @ B
+    cov_y = (a @ B) @ np.linalg.solve(Q_z, (a @ B).T) + np.eye(a.shape[0]) / prec_o
+    log_p_y = log_normal(_host(model.y), np.zeros(a.shape[0]), cov_y)
+    return -(log_p_y + float(model.evaluate_log_prior_hyperparameters()))
+
+
+@pytest.mark.parametrize("solver", ["dense", "scipy"])
+def test_rw1_objective_matches_restricted_marginal_likelihood(tmp_path, solver):
+    root = make_dataset(tmp_path, likelihood="gaussian")
+    model, dalia = build(root, "gaussian", ar1_cls=RW1SubModel, solver=solver)
+    assert model.constraints.k == 1 and model.intrinsic_submodels == [0]
+
+    values_dalia, values_ref = [], []
+    for tau, prec_o in [(1.0, 10.0), (3.0, 4.0), (0.2, 25.0)]:
+        theta = model.theta_external
+        theta[0], theta[1] = tau, prec_o
+        model.theta_external = theta
+        values_dalia.append(float(dalia._evaluate_f(model.theta_internal)))
+        values_ref.append(dense_rw1_reference(model))
+        # the posterior mean satisfies the sum-to-zero constraint
+        np.testing.assert_allclose(np.sum(_host(model.x[:N_LATENT_AR1])), 0.0, atol=1e-8)
+
+    # exact up to a theta-independent constant: compare differences
+    np.testing.assert_allclose(np.diff(values_dalia), np.diff(values_ref), rtol=1e-8, atol=1e-8)
 
 
 # --- Non-Gaussian likelihood -------------------------------------------------------

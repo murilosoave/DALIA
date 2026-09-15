@@ -6,7 +6,7 @@ import pytest
 from dalia import xp
 from dalia.configs import likelihood_config, submodels_config
 from dalia.core.model import Model
-from dalia.submodels import AR1SubModel, RegressionSubModel
+from dalia.submodels import AR1SubModel, RegressionSubModel, RW1SubModel
 from dalia.utils import get_host
 from tests.constraints_utils import (
     N_LATENT_AR1,
@@ -14,17 +14,18 @@ from tests.constraints_utils import (
     likelihood_dict,
     make_dataset,
     regression_dict,
+    rw1_dict,
 )
 
 N_TOTAL = N_LATENT_AR1 + 1
 
 
 def _model(root, ar1_constraints=None, model_constraints=None, ar1_cls=AR1SubModel, tau=1.0):
-    ar1 = ar1_cls(
-        config=submodels_config.parse_config(
-            ar1_dict(root, tau=tau, constraints=ar1_constraints or [])
-        )
-    )
+    if ar1_cls is RW1SubModel:
+        cfg = submodels_config.parse_config(rw1_dict(root, tau=tau, constraints=ar1_constraints or []))
+    else:
+        cfg = submodels_config.parse_config(ar1_dict(root, tau=tau, constraints=ar1_constraints or []))
+    ar1 = ar1_cls(config=cfg)
     reg = RegressionSubModel(config=submodels_config.parse_config(regression_dict(root)))
     return Model(
         submodels=[ar1, reg],
@@ -89,3 +90,40 @@ def test_proper_model_cached_construction_matches_fresh(root):
 def test_str_mentions_constraints(root):
     text = str(_model(root, ar1_constraints=[{"type": "sum_to_zero"}]))
     assert "Number of Constraints" in text
+
+
+def test_duplicate_sum_to_zero_on_intrinsic_is_rejected(root):
+    with pytest.raises(NotImplementedError, match="null-space"):
+        _model(root, ar1_constraints=[{"type": "sum_to_zero"}], ar1_cls=RW1SubModel)
+
+
+def test_model_constraint_touching_intrinsic_block_is_rejected(root):
+    A = np.zeros((1, N_TOTAL))
+    A[0, 0] = 1.0
+    with pytest.raises(NotImplementedError, match="model constraint 0"):
+        _model(root, model_constraints=[{"type": "linear", "A": A, "e": [0.0]}], ar1_cls=RW1SubModel)
+
+
+def test_intrinsic_block_uses_identity_in_solver_copy(root):
+    model = _model(root, ar1_cls=RW1SubModel)
+    assert model.intrinsic_submodels == [0]
+    assert model.constraints.k == 1
+    np.testing.assert_array_equal(model.constraint_prior_rows, [False])
+
+    Q = get_host(model.construct_Q_prior().toarray())
+    Qs = get_host(model.Q_prior_solver.toarray())
+    n = N_LATENT_AR1
+    # true prior keeps the singular RW1 block; solver copy has the identity there
+    np.testing.assert_allclose(Q[:n, :n] @ np.ones(n), 0.0, atol=1e-12)
+    np.testing.assert_array_equal(Qs[:n, :n], np.eye(n))
+    np.testing.assert_array_equal(Qs[n:, n:], Q[n:, n:])
+    assert model.logdet_Q_prior_generalized() == pytest.approx(np.log(n))  # tau = 1
+
+    # cached construction at a new tau: true prior scales, solver copy stays identity
+    theta = model.theta_external
+    theta[0] = 2.5
+    model.theta_external = theta
+    Q2 = get_host(model.construct_Q_prior().toarray())
+    np.testing.assert_allclose(Q2[:n, :n], 2.5 * Q[:n, :n])
+    np.testing.assert_array_equal(get_host(model.Q_prior_solver.toarray()), Qs)
+    assert model.logdet_Q_prior_generalized() == pytest.approx((n - 1) * np.log(2.5) + np.log(n))

@@ -23,7 +23,7 @@ class SubModelConfig(BaseModel, ABC):
 
     # Input folder for this specific submodel
     input_dir: str = None
-    type: Literal["spatio_temporal", "spatial", "regression", "brainiac", "ar1"] = None
+    type: Literal["spatio_temporal", "spatial", "regression", "brainiac", "ar1", "rw1"] = None
 
     # Linear equality constraints A x = e on this submodel's latent parameters.
     # Dicts are validated into LinearConstraintConfig by pydantic.
@@ -65,6 +65,19 @@ class AR1SubModelConfig(SubModelConfig):
         theta = xp.array([self.phi, self.tau])
         #theta_internal = xp.array([self.phi, self.tau])
         theta_keys = ["phi", "tau"]
+
+        return theta, theta_keys
+
+
+class RW1SubModelConfig(SubModelConfig):
+    """Random walk of order 1: Q = tau * D^T D (intrinsic, rank deficiency 1)."""
+
+    tau: float = None  # Precision of the increments
+    ph_tau: PriorHyperparametersConfig = None
+
+    def read_hyperparameters(self):
+        theta = xp.array([self.tau])
+        theta_keys = ["tau"]
 
         return theta, theta_keys
 
@@ -152,4 +165,7 @@ def parse_config(config: dict | str) -> SubModelConfig:
         config["ph_tau"] = parse_priorhyperparameters_config(config["ph_tau"])
         config["ph_phi"] = parse_priorhyperparameters_config(config["ph_phi"])
         return AR1SubModelConfig(**config)
+    if model_type == "rw1":
+        config["ph_tau"] = parse_priorhyperparameters_config(config["ph_tau"])
+        return RW1SubModelConfig(**config)
     raise ValueError(f"Unknown submodel type: {model_type}")

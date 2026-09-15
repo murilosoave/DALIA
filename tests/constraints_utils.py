@@ -50,6 +50,17 @@ def ar1_dict(root: Path, **extra) -> dict:
     }
 
 
+def rw1_dict(root: Path, **extra) -> dict:
+    """RW1 block on the same design matrix as the AR1 block."""
+    return {
+        "type": "rw1",
+        "input_dir": str(root / "inputs_ar1"),
+        "tau": 1.0,
+        "ph_tau": {"type": "gamma", "alpha": 2.0, "beta": 1.0},
+        **extra,
+    }
+
+
 def regression_dict(root: Path) -> dict:
     return {
         "type": "regression",
