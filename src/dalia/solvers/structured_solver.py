@@ -106,6 +106,11 @@ class SerinvSolver(Solver):
                 self.A_diagonal_blocks,
                 self.A_lower_diagonal_blocks,
             )
+            if self.arrowhead_blocksize > 0:
+                # In 'bt' mode the arrow tip (fixed-effects block of the prior) is
+                # decoupled from the BT part; factorize it separately so that solve()
+                # and logdet() cover the complete matrix.
+                self.A_arrow_tip_block[:] = xp.linalg.cholesky(self.A_arrow_tip_block)
         else:
             raise ValueError(
                 f"Unknown sparsity pattern: {sparsity}. Use 'bt' or 'bta'."
@@ -114,6 +119,14 @@ class SerinvSolver(Solver):
         synchronize_gpu()
         toc = time.perf_counter()
         self.t_factorize += toc - tic
+
+    def _solve_tip(self, rhs: NDArray) -> None:
+        """Solve the arrow-tip rows of ``rhs`` in place with the tip Cholesky factor."""
+        tail = rhs[self.n_diag_blocks * self.diagonal_blocksize :]
+        tail[:] = sp.linalg.solve_triangular(self.A_arrow_tip_block, tail, lower=True)
+        tail[:] = sp.linalg.solve_triangular(
+            self.A_arrow_tip_block, tail, lower=True, trans="T"
+        )
 
     def solve(
         self,
@@ -160,18 +173,21 @@ class SerinvSolver(Solver):
                 trans="C",
             )
         elif sparsity == "bt":
+            rhs_bt = rhs[: self.n_diag_blocks * self.diagonal_blocksize]
             pobts(
                 self.A_diagonal_blocks,
                 self.A_lower_diagonal_blocks,
-                rhs,
+                rhs_bt,
                 trans="N",
             )
             pobts(
                 self.A_diagonal_blocks,
                 self.A_lower_diagonal_blocks,
-                rhs,
+                rhs_bt,
                 trans="C",
             )
+            if self.arrowhead_blocksize > 0 and rhs.shape[0] > rhs_bt.shape[0]:
+                self._solve_tip(rhs)
         else:
             raise ValueError(
                 f"Unknown sparsity pattern: {sparsity}. Use 'bt' or 'bta'."
@@ -203,7 +219,8 @@ class SerinvSolver(Solver):
         for i in range(self.n_diag_blocks):
             logdet += xp.sum(xp.log(self.A_diagonal_blocks[i].diagonal()))
 
-        if sparsity == "bta":
+        if self.arrowhead_blocksize > 0:
+            # 'bta': tip of the BTA factor; 'bt': separately factorized tip (see factorize)
             logdet += xp.sum(xp.log(self.A_arrow_tip_block.diagonal()))
 
         if xp.isnan(logdet):
@@ -289,7 +306,7 @@ class SerinvSolver(Solver):
                         block_slice.row, block_slice.col
                     ] = block_slice.data
 
-            if sparsity == "bta":
+            if self.arrowhead_blocksize > 0:
                 block_slice = A_csc[
                     -self.arrowhead_blocksize :, -self.arrowhead_blocksize :
                 ].tocoo()
@@ -484,6 +501,26 @@ class SerinvSolver(Solver):
                     self.bt_lower_cols.append(cols[slice_idx] - block_offsets[i])
                     self.bt_lower_slice.append(slice_idx)
 
+            self.bt_arrow_tip_rows = None
+            self.bt_arrow_tip_cols = None
+            self.bt_arrow_tip_slice = None
+            if self.arrowhead_blocksize > 0:
+                inds = compute_block_slice(
+                    rows,
+                    cols,
+                    block_offsets,
+                    block_row=self.n_diag_blocks,
+                    block_col=self.n_diag_blocks,
+                )
+                slice_idx = slice(int(inds[0]), int(inds[-1] + 1), 1)
+                self.bt_arrow_tip_rows = xp.array(
+                    rows[slice_idx] - block_offsets[self.n_diag_blocks], dtype=xp.int32
+                )
+                self.bt_arrow_tip_cols = xp.array(
+                    cols[slice_idx] - block_offsets[self.n_diag_blocks], dtype=xp.int32
+                )
+                self.bt_arrow_tip_slice = slice_idx
+
             self.bt_diag_rows = xp.array(self.bt_diag_rows, dtype=xp.int32)
             self.bt_diag_cols = xp.array(self.bt_diag_cols, dtype=xp.int32)
             self.bt_lower_rows = xp.array(self.bt_lower_rows, dtype=xp.int32)
@@ -514,6 +551,12 @@ class SerinvSolver(Solver):
                     self.bt_lower_rows[i],
                     self.bt_lower_cols[i],
                 ] = data[self.bt_lower_slice[i]]
+
+        if self.arrowhead_blocksize > 0:
+            self.A_arrow_tip_block[
+                self.bt_arrow_tip_rows,
+                self.bt_arrow_tip_cols,
+            ] = data[self.bt_arrow_tip_slice]
 
     def _structured_to_spmatrix(
         self,

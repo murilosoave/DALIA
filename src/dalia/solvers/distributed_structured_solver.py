@@ -243,6 +243,11 @@ class DistSerinvSolver(Solver):
                 strategy="allgather",
                 nccl_comm=self.nccl_comm,
             )
+            if self.arrowhead_blocksize > 0:
+                # In 'bt' mode the arrow tip (fixed-effects block of the prior) is
+                # decoupled from the BT part: factorize it (replicated on every rank)
+                # so that solve() and logdet() cover the complete matrix.
+                self.A_arrow_tip_block[:] = xp.linalg.cholesky(self.A_arrow_tip_block)
         else:
             raise ValueError(
                 f"Unknown sparsity pattern: {sparsity}. Use 'bt' or 'bta'."
@@ -327,6 +332,20 @@ class DistSerinvSolver(Solver):
 
             self._gather_rhs(rhs_col, sparsity)
 
+            if (
+                sparsity == "bt"
+                and self.arrowhead_blocksize > 0
+                and rhs_col.shape[0] > self.n_diag_blocks * self.diagonal_blocksize
+            ):
+                # Tip rows are not part of the distributed BT solve: solve them locally
+                tail = rhs_col[self.n_diag_blocks * self.diagonal_blocksize :]
+                tail[:] = sp.linalg.solve_triangular(
+                    self.A_arrow_tip_block, tail, lower=True
+                )
+                tail[:] = sp.linalg.solve_triangular(
+                    self.A_arrow_tip_block, tail, lower=True, trans="T"
+                )
+
             # Copy the solved column back to the original rhs
             rhs[:, col : col + 1] = rhs_col
 
@@ -375,6 +394,9 @@ class DistSerinvSolver(Solver):
                 logdet += xp.sum(
                     xp.log(self.reduced_system["A_arrow_tip_block"].diagonal())
                 )
+            elif self.arrowhead_blocksize > 0:
+                # 'bt': separately factorized tip (see factorize)
+                logdet += xp.sum(xp.log(self.A_arrow_tip_block.diagonal()))
         else:
             for i in range(1, self.n_locals[self.rank] - 1):
                 logdet += xp.sum(xp.log(self.A_diagonal_blocks[i].diagonal()))
@@ -490,7 +512,7 @@ class DistSerinvSolver(Solver):
                         block_slice.row, block_slice.col
                     ] = block_slice.data
 
-            if sparsity == "bta":
+            if self.arrowhead_blocksize > 0:
                 block_slice = A_csc[
                     -self.arrowhead_blocksize :, -self.arrowhead_blocksize :
                 ].tocoo()

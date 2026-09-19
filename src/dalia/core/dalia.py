@@ -2,12 +2,14 @@
 
 import logging
 
+import numpy as np
 from scipy import optimize
 from tabulate import tabulate
 import copy
 
 from dalia import ArrayLike, NDArray, backend_flags, comm_rank, comm_size, sp, xp
 from dalia.configs.dalia_config import DaliaConfig
+from dalia.core.constraints import LinearConstraint
 from dalia.core.model import Model
 from dalia.solvers import DenseSolver, DistSerinvSolver, SerinvSolver, SparseSolver
 from dalia.utils import (
@@ -196,6 +198,27 @@ class DALIA:
                     comm=self.comm_qeval,
                     nccl_comm=self.nccl_comm,
                 )
+
+        # --- Linear constraints A x = e on the latent parameters
+        # One persistent Fortran-ordered (n, k + 1) workspace: column 0 holds a
+        # right-hand side solved jointly with the k columns of A^T (V = Q^{-1} A^T),
+        # refilled from the sparse A^T before every solve. See _solve_constraints.
+        self._constraint_rhs: NDArray | None = None
+        self._constraint_solves_star: tuple[NDArray, NDArray] | None = None
+        if self.model.constraints is not None:
+            if isinstance(self.solver, DistSerinvSolver):
+                # The distributed 'bt' solve (needed for A Q_prior^{-1} A^T) returns
+                # wrong spatio-temporal rows in this version (checked on pst_small with
+                # 2 ranks); the tip rows and the log-determinant are correct.
+                raise NotImplementedError(
+                    "Linear constraints are not supported with the distributed serinv "
+                    "solver (min_processes > 1) yet; use min_processes = 1."
+                )
+            self._constraint_rhs = xp.empty(
+                (self.model.n_latent_parameters, self.model.constraints.k + 1),
+                dtype=xp.float64,
+                order="F",
+            )
 
         # --- Set up recurrent variables
         self.gradient_f = xp.zeros(self.model.n_hyperparameters, dtype=xp.float64)
@@ -710,20 +733,35 @@ class DALIA:
                     x,
                 )
 
-                self.model.x[:] = self.solver.solve(
-                    rhs=rhs,
-                    sparsity="bta",
-                )
+                constraint_factor = None
+                if self.model.constraints is None:
+                    self.model.x[:] = self.solver.solve(
+                        rhs=rhs,
+                        sparsity="bta",
+                    )
+                else:
+                    # Unconstrained posterior mean and V = Q^{-1} A^T from one joint solve
+                    x_star, V, constraint_factor = self._solve_constraints(
+                        sparsity="bta", rhs=rhs
+                    )
+                    self.model.x[:] = x_star
 
                 conditional_latent_parameters = (
                     self._evaluate_conditional_latent_parameters(
                         Q_conditional=Q_conditional,
                         x=None,
                         x_mean=self.model.x,
+                        constraint_factor=constraint_factor,
                     )
                 )
 
                 f_theta[0] += conditional_latent_parameters
+
+                if self.model.constraints is not None:
+                    # Store the constrained posterior mean
+                    self.model.x[:] = self.model.constraints.correct(
+                        self.model.x, V, constraint_factor
+                    )
             if task_mapping[1] == self.color_qeval:
                 # Done by processes "odd"
                 log_prior_hyperparameters: float = (
@@ -761,13 +799,16 @@ class DALIA:
                 self.model.evaluate_log_prior_hyperparameters()
             )
 
-            Q_conditional, self.model.x[:], eta = self._inner_iteration()
+            Q_conditional, self.model.x[:], eta, constraint_factor = (
+                self._inner_iteration()
+            )
 
             conditional_latent_parameters = (
                 self._evaluate_conditional_latent_parameters(
                     Q_conditional=Q_conditional,
                     x=None,
                     x_mean=None,
+                    constraint_factor=constraint_factor,
                 )
             )
 
@@ -1215,6 +1256,14 @@ class DALIA:
         self.t_construction_qconditional += toc - tic
 
         self.solver.factorize(self.model.Q_conditional, sparsity="bta")
+
+        # Constraint solves must precede selected_inversion: the structured solvers
+        # overwrite the Cholesky factor with the inverse in place.
+        self._constraint_solves_star = None
+        if self.model.constraints is not None:
+            _, V, L = self._solve_constraints(sparsity="bta")
+            self._constraint_solves_star = (V, L)
+
         self.solver.selected_inversion(sparsity="bta")
 
     def get_marginal_variances_latent_parameters(
@@ -1251,6 +1300,11 @@ class DALIA:
         )
 
         marginal_variances = extract_diagonal(marginal_variances_sp)
+
+        if self.model.constraints is not None:
+            # diag(Sigma*) = diag(Q^{-1}) - diag(V W^{-1} V^T)
+            V, L = self._constraint_solves_star
+            marginal_variances = marginal_variances - self.model.constraints.variance_correction(V, L)
 
         return marginal_variances
 
@@ -1296,8 +1350,9 @@ class DALIA:
                     "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
                 )
 
-                # check order x_star ... -> potentially need to reorder marginal variances
-            self._compute_covariance_latent_parameters(theta_external, x_star)
+            # theta is given in the external scale; the covariance routine expects internal
+            self.model.theta_external = xp.atleast_1d(theta_external)
+            self._compute_covariance_latent_parameters(self.model.theta_internal, x_star)
 
             # now only extract diagonal elements corresponding to marginal variances of the latent parameters
             variances_latent = self.solver._structured_to_spmatrix(
@@ -1311,30 +1366,107 @@ class DALIA:
                 self.model.a @ variances_latent @ self.model.a.T
             ).diagonal()
 
+            if self.model.constraints is not None:
+                # diag(a Sigma* a^T) = diag(a Q^{-1} a^T) - diag((aV) W^{-1} (aV)^T)
+                V, L = self._constraint_solves_star
+                aV = self.model.a @ V
+                if sp.sparse.issparse(aV):
+                    aV = aV.toarray()
+                marginal_variances_observations = (
+                    marginal_variances_observations
+                    - self.model.constraints.variance_correction(aV, L)
+                )
+
             return marginal_variances_observations
 
         raise NotImplementedError(
             "in compute marginals observations: Only Gaussian likelihood is currently supported."
         )
 
-    def _inner_iteration(
+    def _solve_constraints(
         self,
-    ) -> float:
-        """Inner iteration to optimize the latent parameters x.
+        sparsity: str,
+        rhs: NDArray = None,
+        rows=None,
+    ) -> tuple[NDArray | None, NDArray, NDArray]:
+        """Solve for V = Q^{-1} A^T (and optionally a right-hand side) with the matrix
+        currently factorized in the solver, and factorize W = A V.
 
         Parameters
         ----------
-        None
+        sparsity : str
+            'bt' when the solver holds the factor of the prior, 'bta' for Q_conditional.
+        rhs : NDArray, optional
+            Extra right-hand side solved jointly (column 0 of the workspace).
+        rows : optional
+            Subset of constraint rows (host mask or indices); all rows by default.
 
         Returns
         -------
-        logdet : float
-            Log determinant of the conditional precision matrix Q_conditional.
+        x : NDArray[n] or None
+            Solution for ``rhs`` (a view into the workspace: copy before the next solve).
+        V : NDArray[n, k_rows]
+            ``Q^{-1} A_rows^T`` (also a workspace view for in-place solvers).
+        L : NDArray[k_rows, k_rows]
+            Cholesky factor of ``W = A_rows V``.
+
+        Notes
+        -----
+        One batched solve for all columns; every DALIA solver accepts a 2-D right-hand
+        side. The workspace is Fortran-ordered so that column ranges are contiguous.
         """
+        constraints = self.model.constraints
+        if rows is None:
+            rows = np.arange(constraints.k)
+        else:
+            rows = LinearConstraint._host_index(rows)
+        first = 0 if rhs is None else 1
+        buffer = self._constraint_rhs[:, : first + len(rows)]
+        if rhs is not None:
+            buffer[:, 0] = rhs
+        constraints.fill_rhs(buffer[:, first:], rows=rows)
+
+        solution = self.solver.solve(rhs=buffer, sparsity=sparsity)
+
+        x = solution[:, 0] if rhs is not None else None
+        V = solution[:, first:]
+        W = constraints.A[xp.asarray(rows)] @ V
+        L = constraints.factor_W(W, rows=rows)
+        return x, V, L
+
+    def _inner_iteration(
+        self,
+    ) -> tuple:
+        """Inner iteration to optimize the latent parameters x.
+
+        Returns
+        -------
+        Q_conditional : NDArray
+            Conditional precision matrix at the returned x.
+        x_star : NDArray
+            Mode of the latent parameters (constrained mode when constraints are set).
+        eta : NDArray
+            Linear predictor a @ x_star.
+        constraint_factor : NDArray | None
+            Cholesky factor of ``A Q_conditional^{-1} A^T`` for the returned
+            Q_conditional, or None without constraints.
+
+        Notes
+        -----
+        With linear constraints A x = e the iteration starts from the minimum-norm
+        projection of the current x onto the constraint set and every Newton update is
+        projected: the unconstrained Gaussian approximation N(x + dx, Q_c^{-1}) is
+        replaced by its constrained mean x + dx - V W^{-1} (A (x + dx) - e). The
+        iterates stay feasible and the converged x is the constrained mode.
+        """
+        constraints = self.model.constraints
         x_star = self.model.x.copy()
+        if constraints is not None:
+            x_star = constraints.project(x_star)
         x_update = xp.zeros_like(self.model.x, dtype=xp.float64)
         x_i_norm: float = 1.0
         eta = xp.zeros_like(self.model.y, dtype=xp.float64)
+        constraint_factor = None
 
         counter: int = 0
         while x_i_norm >= self.eps_inner_iteration:
@@ -1364,15 +1496,34 @@ class DALIA:
                 eta,
                 x_star,
             )
-            x_update[:] = self.solver.solve(
-                rhs=rhs,
-                sparsity="bta",
-            )
+            if constraints is None:
+                x_update[:] = self.solver.solve(
+                    rhs=rhs,
+                    sparsity="bta",
+                )
+            else:
+                dx, V, constraint_factor = self._solve_constraints(
+                    sparsity="bta", rhs=rhs
+                )
+                x_update[:] = constraints.correct(x_star + dx, V, constraint_factor) - x_star
 
             x_i_norm = xp.linalg.norm(x_update)
             counter += 1
 
-        return Q_conditional, x_star, eta
+        if constraints is not None:
+            # Remove the round-off of the projected updates (a minimum-norm projection,
+            # exact up to the k x k solve) and keep eta consistent with the returned x.
+            # The move is of the order of the solve round-off, far below eps_inner_iteration.
+            x_star = constraints.project(x_star)
+            eta[:] = self.model.a @ x_star
+            residual = xp.linalg.norm(constraints.residual(x_star))
+            tolerance = 1e-8 * (1.0 + xp.linalg.norm(constraints.e))
+            if not bool(residual <= tolerance):
+                raise ValueError(
+                    f"Inner iteration returned an infeasible x: ||A x - e|| = {float(residual):.3e}."
+                )
+
+        return Q_conditional, x_star, eta, constraint_factor
 
     def _evaluate_prior_latent_parameters(
         self,
@@ -1384,7 +1535,7 @@ class DALIA:
         Parameters
         ----------
         x : NDArray
-            Latent parameters.
+            Latent parameters. None means x = 0.
 
         Returns
         -------
@@ -1393,20 +1544,33 @@ class DALIA:
 
         Notes
         -----
-        The prior of the latent parameters is by definition a multivariate normal
-        distribution with mean 0 and precision matrix Q_prior which is evaluated at
-        x in log-scale. The evaluation requires the computation of the log
-        determinant of Q_prior.
-        Log normal:
-        .. math:: 0.5*log(1/(2*pi)^n * |Q_prior|)) - 0.5 * x.T Q_prior x
+        Log normal (constants dropped):
+        .. math:: 0.5*log|Q_prior| - 0.5 * x.T Q_prior x
+
+        The solver factorizes ``Q_prior_solver`` (Q_prior with intrinsic blocks replaced
+        by the identity); the generalized log-determinants of the intrinsic blocks are
+        added analytically. With linear constraints A x = e on proper blocks
+        (Rue & Held, Sec. 2.3), with W = A Q_prior^{-1} A^T,
+        .. math:: log p(x | Ax = e) = log p(x) + 0.5 log|W| + 0.5 e^T W^{-1} e + const
+        where the constant cancels against the conditional term. The automatic
+        null-space constraints of intrinsic blocks need no correction: their prior is
+        the proper density restricted to the constraint subspace.
         """
-        self.solver.factorize(self.model.Q_prior, sparsity="bt")
+        self.solver.factorize(self.model.Q_prior_solver, sparsity="bt")
         logdet_Q_prior: float = self.solver.logdet(sparsity="bt")
+        logdet_Q_prior += self.model.logdet_Q_prior_generalized()
 
         log_prior_latent_parameters: float = +0.5 * logdet_Q_prior
 
         if x is not None:
             log_prior_latent_parameters -= 0.5 * x.T @ self.model.Q_prior @ x
+
+        constraints = self.model.constraints
+        if constraints is not None and self.model.constraint_prior_rows.any():
+            rows = self.model.constraint_prior_rows
+            _, _, L = self._solve_constraints(sparsity="bt", rows=rows)
+            e_rows = constraints.e[xp.asarray(np.flatnonzero(rows))]
+            log_prior_latent_parameters += constraints.log_correction(L, e_rows, rows=rows)
 
         return log_prior_latent_parameters
 
@@ -1415,6 +1579,7 @@ class DALIA:
         Q_conditional: NDArray,
         x: NDArray = None,
         x_mean: NDArray = None,
+        constraint_factor: NDArray = None,
     ) -> float:
         """Evaluation of the conditional of the latent parameters at x using
         the conditional precision matrix Q_conditional and the mean x_mean.
@@ -1424,9 +1589,11 @@ class DALIA:
         Q_conditional : NDArray
             Conditional precision matrix.
         x : NDArray
-            Latent parameters.
+            Latent parameters (None: 0 if x_mean is given, else "at the mode").
         x_mean : NDArray
-            Mean of the latent parameters.
+            Unconstrained mean of the latent parameters (None: "at the mode").
+        constraint_factor : NDArray, optional
+            Cholesky factor of ``A Q_conditional^{-1} A^T`` if already computed.
 
         Returns
         -------
@@ -1439,6 +1606,12 @@ class DALIA:
         x_mean and precision matrix Q_conditional which is evaluated at x in log-scale.
         The evaluation requires the computation of the log determinant of Q_conditional.
         log normal: 0.5*log(1/(2*pi)^n * |Q_conditional|)) - 0.5 * (x - x_mean).T @ Q_conditional @ (x - x_mean)
+
+        With linear constraints A x = e (Rue & Held, Sec. 2.3) the term
+        ``0.5 log|W| + 0.5 (e - A x_mean)^T W^{-1} (e - A x_mean)`` is added, with
+        ``W = A Q_conditional^{-1} A^T``; together with the prior correction this is the
+        identity ``f_c = f_u - log N(e; A x_mean, W_c) + log N(e; 0, W_p)``. At the
+        constrained mode (x_mean None) the quadratic part is zero.
         """
         # Compute the log determinant of Q_conditional
         logdet_Q_conditional = self.solver.logdet(sparsity="bta")
@@ -1467,5 +1640,15 @@ class DALIA:
 
         # Compute the log conditional
         log_conditional = 0.5 * logdet_Q_conditional - 0.5 * quadratic_form
+
+        constraints = self.model.constraints
+        if constraints is not None:
+            if constraint_factor is None:
+                _, _, constraint_factor = self._solve_constraints(sparsity="bta")
+            if x_mean is None:
+                r = xp.zeros(constraints.k, dtype=xp.float64)
+            else:
+                r = -constraints.residual(x_mean)  # e - A x_mean
+            log_conditional += constraints.log_correction(constraint_factor, r)
 
         return log_conditional
