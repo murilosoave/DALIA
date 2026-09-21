@@ -103,6 +103,21 @@ PRIORS += [
     )
     for a, b in [(2.0, 2.0), (5.0, 1.5)]
 ]
+PRIORS += [
+    (
+        f"beta-{a}-{b}-support-{lo}-{up}",
+        BetaPriorHyperparameters(
+            pc.BetaPriorHyperparametersConfig(
+                type="beta", alpha=a, beta=b, support=(lo, up)
+            )
+        ),
+        lambda x, a=a, b=b, lo=lo, up=up: st.beta.logpdf(
+            x, a, b, loc=lo, scale=up - lo
+        ),
+        (-700.0, 700.0),
+    )
+    for a, b, lo, up in [(2.0, 2.0, -1.0, 1.0), (3.0, 1.5, 2.0, 5.0)]
+]
 
 FD_STEP = 1e-6
 
