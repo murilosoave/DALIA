@@ -1,4 +1,4 @@
-import os
+import sys
 
 from gar1.itest import gar1_itest
 from gar2.itest import gar2_itest
@@ -31,14 +31,21 @@ itest_calls = {
     pst_itest: ["seq"],
 }
 
-os.environ["ARRAY_MODULE"] = "cupy"  # "numpy" or "cupy"
+# The backend is selected through the environment, before DALIA gets imported:
+#   ARRAY_MODULE=numpy python runner.py
+#   ARRAY_MODULE=cupy mpirun -n 2 python runner.py
 
 if __name__ == "__main__":
 
+    failed = []
     for itest, modes in itest_calls.items():
-        print(f"{itest.__name__} in mode `{modes[0]}` returned: {itest()}")
+        result = itest()
+        print(f"{itest.__name__} in mode `{modes[0]}` returned: {result}", flush=True)
 
-        # for mode in modes:
-        #     print(f"Running {itest.__name__} in {mode} mode...")
-        #     command = f"ARRAY_MODULE={mode} python tests/integration/{script}"
-        #     os.system(command)
+        # The number of iterations is informative, it does not fail the test
+        if not result.startswith(("success", "warning")):
+            failed.append(itest.__name__)
+
+    if failed:
+        print(f"Failed integration tests: {', '.join(failed)}", flush=True)
+        sys.exit(1)
