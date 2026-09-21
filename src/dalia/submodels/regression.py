@@ -17,12 +17,15 @@ class RegressionSubModel(SubModel):
         """Initializes the model."""
         super().__init__(config)
 
-        self.n_fixed_effects: int = config.n_fixed_effects
+        if config.n_fixed_effects is None:
+            self.n_fixed_effects = self.n_latent_parameters
+        else:
+            self.n_fixed_effects = config.n_fixed_effects
         self.fixed_effects_prior_precision: float = config.fixed_effects_prior_precision
 
         # Check that design_matrix shape match number of fixed effects
         assert (
-            self.n_fixed_effects == self.n_latent_parameters
+            self.n_fixed_effects * self.n_replicates == self.n_latent_parameters
         ), f"Design matrix has {self.n_latent_parameters} columns, but expected {self.n_fixed_effects} columns."
 
         # --- Construct the prior precision matrix
@@ -30,7 +33,7 @@ class RegressionSubModel(SubModel):
             self.fixed_effects_prior_precision * sp.sparse.eye(self.n_fixed_effects)
         )
 
-    def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:
+    def _construct_Q_prior_core(self, **kwargs) -> sp.sparse.coo_matrix:
         """Construct the prior precision matrix."""
 
         return self.Q_prior

@@ -30,13 +30,13 @@ class AR2SubModel(SubModel):
         super().__init__(config)
 
         # check that dimensions match
-        if self.n_latent_parameters < 4:
+        if self.n_latent_parameters_core < 4:
             raise ValueError(
                 "AR(2) submodel requires at least 4 latent parameters, "
-                f"got {self.n_latent_parameters}."
+                f"got {self.n_latent_parameters_core}."
             )
 
-    def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:
+    def _construct_Q_prior_core(self, **kwargs) -> sp.sparse.coo_matrix:
         """
         Construct the prior precision matrix.
 
@@ -58,7 +58,7 @@ class AR2SubModel(SubModel):
         s2 = 1 / tau
         denom = s2 * (1 + phi2) * ((1 - phi2) ** 2 - phi1**2) / (1 - phi2)
 
-        n = self.n_latent_parameters
+        n = self.n_latent_parameters_core
 
         diag = [(1 + phi1**2 + phi2**2) / denom] * n
         diag[0] = diag[-1] = 1 / denom

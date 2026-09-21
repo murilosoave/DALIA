@@ -7,6 +7,8 @@ from dalia.submodels.spatio_temporal import SpatioTemporalSubModel
 from dalia.submodels.brainiac import BrainiacSubModel
 from dalia.submodels.ar1 import AR1SubModel
 from dalia.submodels.ar2 import AR2SubModel
+from dalia.submodels.generic import GenericSubModel
+from dalia.submodels.lkj import LKJSubModel
 
 __all__ = [
     "RegressionSubModel",
@@ -15,4 +17,6 @@ __all__ = [
     "BrainiacSubModel",
     "AR1SubModel",
     "AR2SubModel",
+    "GenericSubModel",
+    "LKJSubModel",
 ]
