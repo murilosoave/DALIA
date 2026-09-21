@@ -29,7 +29,7 @@ $$
 
 The model contains two hyperparameters, theta = (phi, tau):
 
-1. phi: autocorrelation of the AR(1) process, constrained to (0, 1), with a prior set through `ph_phi`.
+1. phi: autocorrelation of the AR(1) process, constrained to (-1, 1), with a prior set through `ph_phi`. `run.py` uses a Beta(5, 1) prior scaled to the support (-1, 1) through the `support` field; the default support (0, 1) would restrict phi to positive values.
 2. tau: precision of the AR(1) process, constrained to be positive, with a prior set through `ph_tau`.
 
 The Poisson likelihood has no hyperparameter of its own. The latent field has dimension n + 1: the n AR(1) states plus the intercept. The fixed effect uses a weak prior whose precision is `fixed_effects_prior_precision`.

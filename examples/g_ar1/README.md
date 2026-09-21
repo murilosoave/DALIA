@@ -29,7 +29,7 @@ $$
 
 The model contains three hyperparameters, theta = (phi, tau, prec_o):
 
-1. phi: autocorrelation of the AR(1) process, constrained to (0, 1), with a prior set through `ph_phi`.
+1. phi: autocorrelation of the AR(1) process, constrained to (-1, 1), with a prior set through `ph_phi`. `run.py` uses a Beta(5, 1) prior scaled to the support (-1, 1) through the `support` field; the default support (0, 1) would restrict phi to positive values.
 2. tau: precision of the AR(1) process, constrained to be positive, with a prior set through `ph_tau`.
 3. prec_o: precision of the Gaussian observation noise (obs_noise_prec in `generate_data.py`), with a prior set through `prior_hyperparameters` in the likelihood configuration.
 
