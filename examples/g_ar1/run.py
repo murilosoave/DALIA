@@ -6,7 +6,7 @@ from dalia import xp
 from dalia.configs import likelihood_config, dalia_config, submodels_config
 from dalia.core.model import Model
 from dalia.core.dalia import DALIA
-from dalia.submodels import AR1SubModel, RegressionSubModel
+from dalia.submodels import ARSubModel, RegressionSubModel
 from dalia.utils import print_msg, plot_marginal_distributions_hp, plot_prior_hp  # , extract_diagonal
 
 BASE_DIR: Path = Path(__file__).parent
@@ -30,10 +30,11 @@ if __name__ == "__main__":
     print("dim(x original): ", x_original.shape)
 
     ar1_dict = {
-        "type": "ar1",
+        "type": "ar",
+        "order": 1,
         "input_dir": f"{BASE_DIR}/inputs_ar1",
-        "phi": 0.5,  # has to be between 0 and 1
-        "ph_phi": {"type": "beta", "alpha": 5.0, "beta": 1.0},
+        "pacf": [0.5],  # has to be between 0 and 1
+        "ph_pacf": [{"type": "beta", "alpha": 5.0, "beta": 1.0}],
         # initial guess on the precision
         "tau": 3, # has to be positive
         "ph_tau": {"type": "gamma", "alpha": 2.0, "beta": 1.0},
@@ -41,7 +42,7 @@ if __name__ == "__main__":
         # "sigma2": 0.33, # has to be positive
         # "ph_sigma2": {"type": "invgamma", "alpha": 2.0, "beta": 1.0}, 
     }
-    ar1 = AR1SubModel(
+    ar1 = ARSubModel(
         config=submodels_config.parse_config(ar1_dict),
     )
 
@@ -171,7 +172,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     plt.show()
     
-    phi = marginals_hp['hyperparameters']['phi']
+    phi = marginals_hp['hyperparameters']['pacf1']
     quantile_pairs = phi['quantiles']['external']['pairs']
 
     print("Quantile pairs of phi:")
