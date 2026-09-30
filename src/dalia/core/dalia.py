@@ -212,6 +212,13 @@ class DALIA:
                     nccl_comm=self.nccl_comm,
                 )
 
+        # Feasible point where the Gaussian path evaluates f(theta): the minimum-norm
+        # solution of C x = e, zero without constraints or when e = 0
+        self.x_feasible = xp.zeros(self.model.n_latent_parameters, dtype=xp.float64)
+        if self.model.C is not None:
+            C = self.model.C
+            self.x_feasible = C.T @ xp.linalg.solve(C @ C.T, self.model.e)
+
         # --- Set up recurrent variables
         self.gradient_f = xp.zeros(self.model.n_hyperparameters, dtype=xp.float64)
         self.f_values_i = xp.zeros(self.n_f_evaluations, dtype=xp.float64)
@@ -702,8 +709,9 @@ class DALIA:
             toc = time.perf_counter()
             self.t_construction_qprior += toc - tic
 
-            eta = xp.zeros_like(self.model.y, dtype=xp.float64)
-            x = xp.zeros_like(self.model.x, dtype=xp.float64)
+            # Evaluation point: any x with C x = e gives the same f(theta),
+            x = self.x_feasible.copy()
+            eta = self.model.a @ x
 
             n_qeval_comm = self.qeval_world.size // self.comm_qeval.size
             task_mapping = [i % n_qeval_comm for i in range(2)]
@@ -725,7 +733,9 @@ class DALIA:
                     x,
                 )
 
-                self.model.x[:] = self.solver.solve(
+                # rhs is the gradient at x, the solve gives the Newton step from x,
+                # which is exact for a Gaussian likelihood
+                self.model.x[:] = x + self.solver.solve(
                     rhs=rhs,
                     sparsity="bta",
                 )
@@ -733,12 +743,21 @@ class DALIA:
                 conditional_latent_parameters = (
                     self._evaluate_conditional_latent_parameters(
                         Q_conditional=Q_conditional,
-                        x=None,
+                        x=x,
                         x_mean=self.model.x,
                     )
                 )
 
-                f_theta[0] += conditional_latent_parameters
+                # Constraint correction of the conditional and constrained mean,
+                # both from a single solve on the Q_conditional factor
+                constraint_correction, constrained_mean = self.update_constrained(
+                    x=x,
+                    mu=self.model.x,
+                    sparsity="bta",
+                )
+                self.model.x[:] = constrained_mean
+
+                f_theta[0] += conditional_latent_parameters + constraint_correction
             if task_mapping[1] == self.color_qeval:
                 # Done by processes "odd"
                 log_prior_hyperparameters: float = (
@@ -747,7 +766,7 @@ class DALIA:
 
                 likelihood: float = self.model.evaluate_likelihood(eta=eta)
                 prior_latent_parameters: float = (
-                    self._evaluate_prior_latent_parameters()
+                    self._evaluate_prior_latent_parameters(x=x)
                 )
 
                 f_theta[0] -= (
@@ -1389,6 +1408,63 @@ class DALIA:
 
         return Q_conditional, x_star, eta
 
+    def update_constrained(
+        self,
+        x: NDArray,
+        mu: NDArray,
+        sparsity: str,
+    ) -> tuple:
+        """
+        Correction of the log density and mean of the GMRF N(mu, Q^{-1}) conditioned on C x = e.
+
+        Parameters
+        ----------
+        x : NDArray
+            Evaluation point of the log density, must satisfy C x = e.
+        mu : NDArray
+            Unconstrained mean.
+        sparsity : str
+            Sparsity of Q, which must already be factorized in self.solver.
+
+        Returns
+        -------
+        correction : float
+            log p(x | C x = e) - log p(x) + 1/2 log|C C^T| - k/2 log(2 pi),
+            i.e. the correction without the terms that depend only on C, which
+            cancel between the prior and the conditional in f(theta).
+            0 if there are no constraints.
+        mu_star : NDArray
+            Constrained mean, mu itself if there are no constraints.
+
+        Notes
+        -----
+        Bayes rule: log p(x | Cx) = log p(x) + log p(Cx | x) - log p(Cx), with
+        .. math:: log p(Cx | x) = -1/2 log|C C^T|
+        .. math:: log p(Cx) = -k/2 log(2 pi) - 1/2 log|C Q^{-1} C^T| - 1/2 (Cx - C mu)^T (C Q^{-1} C^T)^{-1} (Cx - C mu)
+        The terms depending only on C, -1/2 log|C C^T| + k/2 log(2 pi), are dropped:
+        they are the same for the prior and the conditional and cancel in f(theta).
+        .. math:: mu^* = mu - Q^{-1} C^T (C Q^{-1} C^T)^{-1} (C mu - e)
+        """
+        C = self.model.C
+        if C is None:
+            return 0.0, mu
+
+        # Q^{-1} C^T, the solver overwrites the rhs
+        Qinv_Ct = self.solver.solve(rhs=C.T.copy(), sparsity=sparsity)
+
+        # C Q^{-1} C^T
+        W = C @ Qinv_Ct
+        _, logdet_W = xp.linalg.slogdet(W)
+
+        # --- Correction of the log density
+        Cr = C @ (x - mu)
+        correction = 0.5 * logdet_W + 0.5 * Cr.T @ xp.linalg.solve(W, Cr)
+
+        # --- Constrained mean
+        mu_star = mu - Qinv_Ct @ xp.linalg.solve(W, C @ mu - self.model.e)
+
+        return correction, mu_star
+
     def _evaluate_prior_latent_parameters(
         self,
         x: NDArray = None,
@@ -1422,6 +1498,16 @@ class DALIA:
 
         if x is not None:
             log_prior_latent_parameters -= 0.5 * x.T @ self.model.Q_prior @ x
+
+        if self.model.C is not None:
+            # x = None means evaluated in 0, only feasible if e = 0; the prior mean is 0
+            x_eval = xp.zeros(self.model.n_latent_parameters) if x is None else x
+            correction, _ = self.update_constrained(
+                x=x_eval,
+                mu=xp.zeros_like(x_eval),
+                sparsity="bt",
+            )
+            log_prior_latent_parameters += correction
 
         return log_prior_latent_parameters
 
