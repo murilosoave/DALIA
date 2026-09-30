@@ -16,6 +16,10 @@ from dalia.configs.priorhyperparameters_config import (
 from dalia.configs.priorhyperparameters_config import (
     parse_config as parse_priorhyperparameters_config,
 )
+from dalia.configs.constraints_config import ConstraintConfig
+from dalia.configs.constraints_config import (
+    parse_config as parse_constraints_config,
+)
 
 class SubModelConfig(BaseModel, ABC):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -23,6 +27,9 @@ class SubModelConfig(BaseModel, ABC):
     # Input folder for this specific submodel
     input_dir: str = None
     type: Literal["spatio_temporal", "spatial", "regression", "brainiac", "ar1", "ar2"] = None
+
+    # Linear constraints C x = e on the latent parameters of this submodel
+    constraints: list[ConstraintConfig] = []
 
     @abstractmethod
     def read_hyperparameters(self) -> tuple[ArrayLike, list]: ...
@@ -151,6 +158,11 @@ def parse_config(config: dict | str) -> SubModelConfig:
     if isinstance(config, str):
         with open(config, "rb") as f:
             config = tomllib.load(f)
+    if "constraints" in config:
+        config["constraints"] = [
+            parse_constraints_config(constraint) for constraint in config["constraints"]
+        ]
+
     model_type = config.get("type")
     if model_type == "spatio_temporal":
         config["ph_s"] = parse_priorhyperparameters_config(config["ph_s"])
