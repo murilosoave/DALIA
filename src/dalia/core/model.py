@@ -9,6 +9,7 @@ from tabulate import tabulate
 
 from dalia import ArrayLike, NDArray, sp, xp
 from dalia.configs.likelihood_config import LikelihoodConfig
+from dalia.configs.constraints_config import ConstraintConfig
 from dalia.configs.priorhyperparameters_config import (
     BetaPriorHyperparametersConfig,
     GaussianMVNPriorHyperparametersConfig,
@@ -46,9 +47,23 @@ class Model(ABC):
         self,
         submodels: list[SubModel],
         likelihood_config: LikelihoodConfig,
+        constraints: list[ConstraintConfig] = None,
         **kwargs,
     ) -> None:
-        """Initializes the model."""
+        """Initializes the model.
+
+        Parameters
+        ----------
+        submodels : list[SubModel]
+            Submodels of the latent field. Their own constraints are declared in
+            their configs and act on their block of the latent field.
+        likelihood_config : LikelihoodConfig
+            Configuration of the likelihood.
+        constraints : list[ConstraintConfig]
+            Linear constraints on the whole latent field. Their columns follow the
+            final latent order, in which a spatio-temporal submodel is moved to
+            the front.
+        """
         self.modeltype = kwargs.get("modeltype", "Default Model")
 
         # Check the order of the submodels, we want the SpatioTemporalSubModel first
@@ -331,6 +346,9 @@ class Model(ABC):
 
             self.a: NDArray = xp.concatenate(data, axis=1)
 
+        # --- Linear constraints C x = e from the submodels and the model
+        self.C, self.e = self.construct_constraints(constraints)
+
         self.permutation_latent_variables = xp.arange(0, self.n_latent_parameters, 1)
         self.inverse_permutation_latent_variables = xp.arange(
             0, self.n_latent_parameters, 1
@@ -477,6 +495,65 @@ class Model(ABC):
         )
 
     ########################################################################
+
+    def construct_constraints(self, constraints: list[ConstraintConfig] = None) -> tuple:
+        """Combine the constraints of the submodels and of the model into C x = e.
+
+        Parameters
+        ----------
+        constraints : list[ConstraintConfig]
+            Model-level constraints, acting on the whole latent field.
+
+        Returns
+        -------
+        C : NDArray
+            Constraint matrix of shape (k, n_latent_parameters), None without constraints.
+        e : NDArray
+            Right-hand side of shape (k,), None without constraints.
+
+        Notes
+        -----
+        Each submodel constructs its constraints on its own latent parameters; they
+        are placed at the columns of its block, after the reordering of the
+        submodels. The rows are stacked: submodels first, in their final order,
+        then the model constraints.
+        """
+        C_rows = []
+        e_rows = []
+
+        for i, submodel in enumerate(self.submodels):
+            submodel_C, submodel_e = submodel.construct_constraints()
+            if submodel_C is None:
+                continue
+
+            C = xp.zeros(
+                (submodel_C.shape[0], self.n_latent_parameters), dtype=xp.float64
+            )
+            C[
+                :, self.latent_parameters_idx[i] : self.latent_parameters_idx[i + 1]
+            ] = submodel_C
+
+            C_rows.append(C)
+            e_rows.append(submodel_e)
+
+        for constraint in constraints or []:
+            C, e = constraint.build(self.n_latent_parameters)
+            C_rows.append(C)
+            e_rows.append(e)
+
+        if len(C_rows) == 0:
+            return None, None
+
+        C = xp.concatenate(C_rows, axis=0)
+        e = xp.concatenate(e_rows)
+
+        if xp.linalg.matrix_rank(C) < C.shape[0]:
+            raise ValueError(
+                "The combined constraints C must have full row rank: some constraints "
+                "are redundant or conflicting."
+            )
+
+        return C, e
 
     def construct_Q_prior(self) -> sp.sparse.spmatrix:
         kwargs = {}
@@ -772,18 +849,20 @@ class Model(ABC):
             "Number of Latent Parameters",
             "Number of Observations",
             "Type of Likelihood",
+            "Number of Constraints",
         ]
         values = [
             self.n_hyperparameters,
             self.n_latent_parameters,
             self.n_observations,
             self.likelihood_config.type.capitalize(),
+            0 if self.C is None else self.C.shape[0],
         ]
 
         model_table = tabulate(
             [headers, values],
             tablefmt="fancy_grid",
-            colalign=("center", "center", "center", "center"),
+            colalign=("center", "center", "center", "center", "center"),
         )
 
         # Add the header title

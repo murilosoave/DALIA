@@ -53,6 +53,30 @@ class SubModel(ABC):
             self.x_initial: NDArray = xp.zeros((self.a.shape[1]), dtype=float)
 
 
+    def construct_constraints(self) -> tuple:
+        """Construct the linear constraints C x = e declared in the config of the
+        submodel, on its own latent parameters.
+
+        Returns
+        -------
+        C : NDArray
+            Constraint matrix of shape (k, n_latent_parameters), None without constraints.
+        e : NDArray
+            Right-hand side of shape (k,), None without constraints.
+        """
+        if len(self.config.constraints) == 0:
+            return None, None
+
+        blocks = [
+            constraint.build(self.n_latent_parameters)
+            for constraint in self.config.constraints
+        ]
+
+        C = xp.concatenate([C for C, _ in blocks], axis=0)
+        e = xp.concatenate([e for _, e in blocks])
+
+        return C, e
+
     @abstractmethod
     def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:
         """Construct the prior precision matrix."""
