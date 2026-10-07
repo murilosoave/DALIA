@@ -1434,19 +1434,19 @@ class DALIA:
         if C is None:
             return 0.0, mu
 
-        # Q^{-1} C^T, the solver overwrites the rhs
-        Qinv_Ct = self.solver.solve(rhs=C.T.copy(), sparsity=sparsity)
+        # V = Q^{-1} C^T, the solver overwrites the rhs
+        V = self.solver.solve(rhs=C.T.copy(), sparsity=sparsity)
 
-        # C Q^{-1} C^T
-        W = C @ Qinv_Ct
+        # W = C Q^{-1} C^T
+        W = C @ V
         _, logdet_W = xp.linalg.slogdet(W)
 
         # --- Correction of the log density
         Cr = C @ (x - mu)
         correction = 0.5 * logdet_W + 0.5 * Cr.T @ xp.linalg.solve(W, Cr)
 
-        # --- Constrained mean
-        mu_star = mu - Qinv_Ct @ xp.linalg.solve(W, C @ mu - self.model.e)
+        # --- Constrained mean, mu - V W^-1 (C mu - e)  (= mu - U^T (C mu - e))
+        mu_star = mu - V @ xp.linalg.solve(W, C @ mu - self.model.e)
 
         return correction, mu_star
 
