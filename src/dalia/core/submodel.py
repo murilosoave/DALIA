@@ -7,7 +7,6 @@ import numpy as np
 from scipy.sparse import load_npz, spmatrix
 
 from dalia import NDArray, sp, xp
-from dalia.configs.constraints_config import SumToZeroConstraintConfig
 from dalia.configs.submodels_config import SubModelConfig
 
 
@@ -15,9 +14,9 @@ class SubModel(ABC):
     """Abstract core class for statistical models."""
 
     # An intrinsic submodel has a rank-deficient precision matrix (e.g. a random
-    # walk). Setting intrinsic = True in a submodel is all it takes: a constant is
-    # added to the diagonal of its construct_Q_prior and a sum-to-zero constraint
-    # to its constraints.
+    # walk). Setting intrinsic = True in a submodel adds a constant to the diagonal
+    # of its construct_Q_prior. The constraints that identify the submodel are
+    # declared in its _construct_identifiability_constraints.
     intrinsic: bool = False
 
     def __init__(
@@ -87,9 +86,8 @@ class SubModel(ABC):
 
     def construct_constraints(self) -> tuple:
         """Construct the linear constraints C x = e declared in the config of the
-        submodel, on its own latent parameters. An intrinsic submodel gets a
-        sum-to-zero constraint first: its prior does not determine the level of
-        the field.
+        submodel, on its own latent parameters, preceded by the identifiability
+        constraints of the submodel.
 
         Returns
         -------
@@ -98,9 +96,8 @@ class SubModel(ABC):
         e : NDArray
             Right-hand side of shape (k,), None without constraints.
         """
-        constraints = list(self.config.constraints)
-        if self.intrinsic:
-            constraints.insert(0, SumToZeroConstraintConfig())
+        constraints = self._construct_identifiability_constraints()
+        constraints.extend(self.config.constraints)
 
         if len(constraints) == 0:
             return None, None
@@ -113,6 +110,13 @@ class SubModel(ABC):
         e = xp.concatenate([e for _, e in blocks])
 
         return C, e
+
+    def _construct_identifiability_constraints(self) -> list:
+        """Construct the constraints the submodel needs to be identifiable, as a
+        list of ConstraintConfig. None by default: a submodel that needs them
+        (e.g. an intrinsic one) overrides this method.
+        """
+        return []
 
     @abstractmethod
     def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:

@@ -2,6 +2,7 @@
 from tabulate import tabulate
 
 from dalia import sp
+from dalia.configs.constraints_config import SumToZeroConstraintConfig
 from dalia.configs.submodels_config import RW1SubModelConfig
 from dalia.core.submodel import SubModel
 from dalia.utils import add_str_header
@@ -49,6 +50,11 @@ class RW1SubModel(SubModel):
         Q_prior.sort_indices()
 
         return Q_prior.tocoo()
+
+    def _construct_identifiability_constraints(self) -> list:
+        """The null space of R is the constant vector, so the prior does not
+        determine the level of the field: sum(x) = 0."""
+        return [SumToZeroConstraintConfig()]
 
     def __str__(self) -> str:
         """String representation of the submodel."""
