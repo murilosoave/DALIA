@@ -56,3 +56,10 @@ def test_only_intrinsic_submodels_are_wrapped():
     for submodel_class in (AR1SubModel, AR2SubModel, RegressionSubModel):
         assert not submodel_class.intrinsic
         assert submodel_class.construct_Q_prior.__name__ == "construct_Q_prior"
+
+
+def test_submodels_have_no_identifiability_constraints_by_default(tmp_path):
+    for submodel_class in (AR1SubModel, AR2SubModel, RegressionSubModel):
+        assert submodel_class._construct_identifiability_constraints(None) == []
+
+    assert len(build(tmp_path)._construct_identifiability_constraints()) == 1
