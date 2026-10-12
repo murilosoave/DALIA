@@ -1293,7 +1293,10 @@ class DALIA:
 
         marginal_variances = extract_diagonal(marginal_variances_sp)
 
-        return marginal_variances
+        # The solver still holds the Q_c factor after the selected inversion
+        return self.update_constrained_variance(
+            variances=marginal_variances, sparsity="bta"
+        )
 
     def get_marginal_variances_observations(
         self, theta_external: NDArray = None, x_star: NDArray = None
@@ -1477,6 +1480,50 @@ class DALIA:
         mu_star = mu - V @ xp.linalg.solve(W, C @ mu - self.model.e)
 
         return correction, mu_star
+
+    def update_constrained_variance(
+        self,
+        variances: NDArray,
+        sparsity: str,
+    ) -> NDArray:
+        """
+        Marginal variances of the GMRF N(mu, Q^{-1}) conditioned on C x = e.
+
+        Parameters
+        ----------
+        variances : NDArray
+            Unconstrained marginal variances diag(Q^{-1}).
+        sparsity : str
+            Sparsity of Q, which must already be factorized in self.solver.
+
+        Returns
+        -------
+        variances_star : NDArray
+            Constrained marginal variances, variances itself if there are no constraints.
+
+        Notes
+        -----
+        Conditioning by kriging (Rue & Held, 2005), with V = Q^{-1} C^T, W = C V and
+        U = W^{-1} V^T:
+        .. math:: Cov(x | C x = e) = Q^{-1} - Q^{-1} C^T (C Q^{-1} C^T)^{-1} C Q^{-1} = Q^{-1} - V U
+        Only its diagonal is computed, without forming the n x n matrix V U:
+        .. math:: Var(x_i | C x = e) = Var(x_i) - sum_j V_ij U_ji
+        """
+        C = self.model.C
+        if C is None:
+            return variances
+
+        # V = Q^{-1} C^T, the solver overwrites the rhs
+        V = self.solver.solve(rhs=C.T.copy(), sparsity=sparsity)
+
+        # W = C Q^{-1} C^T
+        W = C @ V
+
+        # U = W^{-1} V^T
+        U = xp.linalg.solve(W, V.T)
+
+        # --- Constrained variances, diag(Q^{-1} - V U) = diag(Q^{-1}) - sum_j V_ij U_ji
+        return variances - xp.sum(V * U.T, axis=1)
 
     def _evaluate_prior_latent_parameters(
         self,
