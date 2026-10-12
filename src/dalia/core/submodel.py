@@ -7,11 +7,18 @@ import numpy as np
 from scipy.sparse import load_npz, spmatrix
 
 from dalia import NDArray, sp, xp
+from dalia.configs.constraints_config import SumToZeroConstraintConfig
 from dalia.configs.submodels_config import SubModelConfig
 
 
 class SubModel(ABC):
     """Abstract core class for statistical models."""
+
+    # An intrinsic submodel has a rank-deficient precision matrix (e.g. a random
+    # walk). Setting intrinsic = True in a submodel is all it takes: a constant is
+    # added to the diagonal of its construct_Q_prior and a sum-to-zero constraint
+    # to its constraints.
+    intrinsic: bool = False
 
     def __init__(
         self,
@@ -52,10 +59,37 @@ class SubModel(ABC):
         except FileNotFoundError:
             self.x_initial: NDArray = xp.zeros((self.a.shape[1]), dtype=float)
 
+    def __init_subclass__(cls) -> None:
+        if cls.intrinsic:
+            cls.construct_Q_prior = cls._add_diagonal(cls.construct_Q_prior)
+
+    @staticmethod
+    def _add_diagonal(construct_Q_prior):
+        """Wrap the construct_Q_prior of an intrinsic submodel: its precision matrix is
+        rank deficient, so the constant config.diagonal is added to its diagonal,
+
+        Q = construct_Q_prior(...) + diagonal * I, with I the identity matrix.
+        """
+
+        def wrapper(self, **kwargs):
+            Q_prior = construct_Q_prior(self, **kwargs)
+            Q_prior = Q_prior + self.config.diagonal * sp.sparse.identity(
+                self.n_latent_parameters
+            )
+
+            # need this -> otherwise there might be a sorting issue
+            Q_prior = Q_prior.tocsr()
+            Q_prior.sort_indices()
+
+            return Q_prior.tocoo()
+
+        return wrapper
 
     def construct_constraints(self) -> tuple:
         """Construct the linear constraints C x = e declared in the config of the
-        submodel, on its own latent parameters.
+        submodel, on its own latent parameters. An intrinsic submodel gets a
+        sum-to-zero constraint first: its prior does not determine the level of
+        the field.
 
         Returns
         -------
@@ -64,12 +98,15 @@ class SubModel(ABC):
         e : NDArray
             Right-hand side of shape (k,), None without constraints.
         """
-        if len(self.config.constraints) == 0:
+        constraints = list(self.config.constraints)
+        if self.intrinsic:
+            constraints.insert(0, SumToZeroConstraintConfig())
+
+        if len(constraints) == 0:
             return None, None
 
         blocks = [
-            constraint.build(self.n_latent_parameters)
-            for constraint in self.config.constraints
+            constraint.build(self.n_latent_parameters) for constraint in constraints
         ]
 
         C = xp.concatenate([C for C, _ in blocks], axis=0)
