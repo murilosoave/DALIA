@@ -35,6 +35,7 @@ from dalia.submodels import (
     SpatioTemporalSubModel,
     AR1SubModel,
     AR2SubModel,
+    RW1SubModel,
 )
 from dalia.utils import add_str_header, boxify, scaled_logit
 from dalia.utils.scalar_ndarray import ensure_scalar
@@ -239,6 +240,25 @@ class Model(ABC):
                         raise ValueError(
                             f"Unknown prior hyperparameter type for ph_{hp_type}"
                         )
+
+                if isinstance(
+                    submodel.config.ph_tau, GaussianPriorHyperparametersConfig
+                ):
+                    self.prior_hyperparameters.append(
+                        GaussianPriorHyperparameters(
+                            config=submodel.config.ph_tau,
+                        )
+                    )
+                elif isinstance(submodel.config.ph_tau, GammaPriorHyperparametersConfig):
+                    self.prior_hyperparameters.append(
+                        GammaPriorHyperparameters(
+                            config=submodel.config.ph_tau,
+                        )
+                    )
+                else:
+                    raise ValueError("Unknown prior hyperparameter type for ph_tau")
+
+            elif isinstance(submodel, RW1SubModel):
 
                 if isinstance(
                     submodel.config.ph_tau, GaussianPriorHyperparametersConfig
@@ -607,6 +627,13 @@ class Model(ABC):
                             self.theta_external[hp_idx]
                         )
                         # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
+                elif isinstance(submodel, RW1SubModel):
+                    for hp_idx in range(
+                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
+                    ):
+                        kwargs[self.theta_keys[hp_idx]] = float(
+                            self.theta_external[hp_idx]
+                        )
                 elif isinstance(submodel, RegressionSubModel):
                     ...
 
@@ -675,6 +702,13 @@ class Model(ABC):
                             self.theta_external[hp_idx]
                         )
                         # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
+                elif isinstance(submodel, RW1SubModel):
+                    for hp_idx in range(
+                        self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
+                    ):
+                        kwargs[self.theta_keys[hp_idx]] = float(
+                            self.theta_external[hp_idx]
+                        )
 
                 submodel_Q_prior = submodel.construct_Q_prior(**kwargs)
 
