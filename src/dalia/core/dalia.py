@@ -789,6 +789,12 @@ class DALIA:
                     x_mean=None,
                 )
             )
+            # At the constrained mode, which is the constrained mean of the Gaussian
+            # approximation, only the normaliser 1/2 log|C Q_c^-1 C^T| of the correction
+            # remains; computed before the prior refactorizes the solver
+            constraint_correction, _ = self.update_constrained(
+                x=self.model.x, mu=self.model.x, sparsity="bta"
+            )
 
             prior_latent_parameters: float = self._evaluate_prior_latent_parameters(
                 x=self.model.x,
@@ -803,6 +809,7 @@ class DALIA:
                 + likelihood
                 + prior_latent_parameters
                 - conditional_latent_parameters
+                - constraint_correction
             )
 
         if xp.isnan(f_theta[0]):
@@ -1387,6 +1394,12 @@ class DALIA:
                 rhs=rhs,
                 sparsity="bta",
             )
+            if self.model.C is not None:
+                # Constrained Newton step: constrained mean of the local Gaussian approximation
+                _, x_new = self.update_constrained(
+                    x=x_star, mu=x_star + x_update, sparsity="bta"
+                )
+                x_update[:] = x_new - x_star
 
             x_i_norm = xp.linalg.norm(x_update)
             counter += 1
