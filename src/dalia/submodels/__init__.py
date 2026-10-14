@@ -8,6 +8,7 @@ from dalia.submodels.brainiac import BrainiacSubModel
 from dalia.submodels.ar1 import AR1SubModel
 from dalia.submodels.ar2 import AR2SubModel
 from dalia.submodels.rw1 import RW1SubModel
+from dalia.submodels.rw2 import RW2SubModel
 
 __all__ = [
     "RegressionSubModel",
@@ -17,4 +18,5 @@ __all__ = [
     "AR1SubModel",
     "AR2SubModel",
     "RW1SubModel",
+    "RW2SubModel",
 ]
