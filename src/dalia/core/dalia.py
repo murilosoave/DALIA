@@ -21,6 +21,7 @@ from dalia.utils import (
     free_unused_gpu_memory,
     get_device,
     get_host,
+    marginal_variances_linear_predictor,
     memory_report,
     print_msg,
     set_device,
@@ -1279,9 +1280,6 @@ class DALIA:
         """
 
         # TODO: implement this for non-Gaussian likelihoods
-        check_vector_consistency(theta_external, comm=self.comm_world, flag="theta_external", verbose="Full")
-        check_vector_consistency(x_star, comm=self.comm_world, flag="x_star", verbose="Minimal")
-
         if self.model.is_likelihood_gaussian():
             # TODO: this should be only called by rank 0?
             if theta_external is None and x_star is None:
@@ -1289,29 +1287,40 @@ class DALIA:
                     "Computing marginal variances for currently stored latent parameters. "
                 )
                 x_star = self.model.x
-                theta_external = self.model.theta_external
-
-            if theta_external is None or x_star is None:
+                theta = self.model.theta_internal
+            elif theta_external is not None and x_star is not None:
+                ## assume theta to be in "external" scale
+                self.model.theta_external = xp.atleast_1d(theta_external)
+                theta = self.model.theta_internal
+            else:
                 raise ValueError(
                     "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
                 )
 
-                # check order x_star ... -> potentially need to reorder marginal variances
-            self._compute_covariance_latent_parameters(theta_external, x_star)
+            check_vector_consistency(theta, comm=self.comm_world, flag="theta", verbose="Full")
+            check_vector_consistency(x_star, comm=self.comm_world, flag="x_star", verbose="Minimal")
 
-            # now only extract diagonal elements corresponding to marginal variances of the latent parameters
-            variances_latent = self.solver._structured_to_spmatrix(
-                self.model.Q_conditional,
+            # check order x_star ... -> potentially need to reorder marginal variances
+            self._compute_covariance_latent_parameters(theta, x_star)
+
+            # The entries (j, k) of the covariance needed for diag(A Q_selected_inv A^T)
+            # are in the sparsity pattern of Q_conditional. The covariance is
+            # symmetric, so only its lower triangle is extracted.
+            covariance = self.solver._structured_to_spmatrix(
+                sp.sparse.tril(self.model.Q_conditional),
                 sparsity="bta",
+                symmetrize=False,
             )
 
-            # compute diag(A Q_selected_inv A^T)
-            # TODO: sparsify this. can be improved A LOT
-            marginal_variances_observations = (
-                self.model.a @ variances_latent @ self.model.a.T
-            ).diagonal()
+            # the transpose of the lower triangle is the upper triangle, in csr
+            covariance = sp.sparse.csr_matrix(covariance.T)
+            covariance.sort_indices()
 
-            return marginal_variances_observations
+            a = sp.sparse.csr_matrix(self.model.a)
+            a.sum_duplicates()
+            a.sort_indices()
+
+            return marginal_variances_linear_predictor(a, covariance)
 
         raise NotImplementedError(
             "in compute marginals observations: Only Gaussian likelihood is currently supported."
