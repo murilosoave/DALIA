@@ -36,6 +36,7 @@ from dalia.submodels import (
     AR1SubModel,
     AR2SubModel,
     RW1SubModel,
+    RW2SubModel,
 )
 from dalia.utils import add_str_header, boxify, scaled_logit
 from dalia.utils.scalar_ndarray import ensure_scalar
@@ -258,7 +259,7 @@ class Model(ABC):
                 else:
                     raise ValueError("Unknown prior hyperparameter type for ph_tau")
 
-            elif isinstance(submodel, RW1SubModel):
+            elif isinstance(submodel, (RW1SubModel, RW2SubModel)):
 
                 if isinstance(
                     submodel.config.ph_tau, GaussianPriorHyperparametersConfig
@@ -627,7 +628,7 @@ class Model(ABC):
                             self.theta_external[hp_idx]
                         )
                         # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, RW1SubModel):
+                elif isinstance(submodel, (RW1SubModel, RW2SubModel)):
                     for hp_idx in range(
                         self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
                     ):
@@ -702,7 +703,7 @@ class Model(ABC):
                             self.theta_external[hp_idx]
                         )
                         # kwargs[self.theta_keys[hp_idx]] = float(theta_interpret[hp_idx])
-                elif isinstance(submodel, RW1SubModel):
+                elif isinstance(submodel, (RW1SubModel, RW2SubModel)):
                     for hp_idx in range(
                         self.hyperparameters_idx[i], self.hyperparameters_idx[i + 1]
                     ):
