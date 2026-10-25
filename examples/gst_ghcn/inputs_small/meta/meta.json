@@ -1,0 +1,30 @@
+{
+  "year": 2022,
+  "region": "conus",
+  "bbox": [
+    24.0,
+    50.0,
+    -125.0,
+    -66.0
+  ],
+  "days": [
+    1,
+    60
+  ],
+  "n_stations": 300,
+  "n_observations": 17410,
+  "ns": 224,
+  "nt": 60,
+  "n_latent_spatio_temporal": 13440,
+  "n_fixed_effects": 4,
+  "fixed_effects": [
+    "intercept",
+    "elevation_km",
+    "sin_lat",
+    "sin_lat^2"
+  ],
+  "median_edge_km": 500.3023147383263,
+  "y_units": "deg C, daily mean of TMIN and TMAX",
+  "range_units": "radians on the unit sphere (1 rad = 6371 km); 600 km = 0.094",
+  "seed": 0
+}

@@ -193,3 +193,6 @@ examples/g_ar2/**/*.npz
 *.png
 *.jpeg
 *.svg
+# GHCN example: generated inputs of the full case and run outputs
+examples/gst_ghcn/inputs_full/
+examples/gst_ghcn/outputs_*/

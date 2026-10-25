@@ -1,0 +1,206 @@
+# Running the sTiles benchmark on Shaheen III, step by step
+
+Goal: the wall time of a full DALIA inference on the GHCN-Daily 2022 case
+(456k latent variables, 4.31 M observations) with the sTiles solver, against
+the number of threads (one process) and against the number of processes on one
+node, plus the Serinv baseline. The result feeds `figs_dalia/stiles_threads.pdf`
+of the KAUST poster.
+
+Assumed done (see `install.md`, "On Shaheen III@KAUST"): the conda environment
+`$MY_SW/envs/dalia_hmpi_shaheen` with `mpi4py` built against Cray MPICH,
+`git-lfs` in `~/.local/bin`, and the test suite passing from
+`/scratch/$USER/src/DALIA/tests`. Everything below runs under `/scratch`;
+`/home` is not visible from compute nodes.
+
+Shell set-up used in every step (put it in `~/.bashrc` or source it):
+
+```bash
+module switch PrgEnv-cray PrgEnv-gnu
+source $MY_SW/miniconda3-amd64/bin/activate $MY_SW/envs/dalia_hmpi_shaheen
+export PATH=$HOME/.local/bin:$PATH                 # git-lfs
+export STILES_CACHE_DIR=$MY_SW/stiles_cache        # must be under /scratch, not ~/.cache
+export STILES_BIND=0
+export DALIA=/scratch/$USER/src/DALIA
+```
+
+## 1. Get this branch onto Shaheen
+
+On the machine where the example was developed, commit the example and push the
+branch (the small inputs are LFS-tracked `.npz` files, so `git-lfs` must be
+installed there too):
+
+```bash
+cd DALIA && git checkout bench/shareen_cluster
+git add examples/gst_ghcn examples/run_example_shaheen3_kaust.sh install.md .gitignore
+git commit -m "feat: GHCN-Daily spatio-temporal example and Shaheen benchmark scripts"
+git push origin bench/shareen_cluster
+```
+
+On a Shaheen login node:
+
+```bash
+cd $DALIA && git fetch && git checkout bench/shareen_cluster && git lfs pull
+python -m pip install --no-deps --editable .     # refresh the editable install if the branch changed
+ls examples/gst_ghcn/inputs_small/inputs_spatio_temporal/   # c0 g1 g2 g3 m0 m1 m2 a .npz
+```
+
+## 2. Install sTiles in the environment (login node, internet needed)
+
+The `stiles` wheel is pure Python; the native `libstiles.so` is downloaded
+from GitHub on the first import and cached. Pin the versions used for the
+Spark results so the numbers are comparable (`sTiles 2026.9.4`, release
+`Version_2026.09.04`, libstiles 3.0.0):
+
+```bash
+python -m pip install stiles==2026.9.4
+mkdir -p $STILES_CACHE_DIR
+STILES_RELEASE_TAG=Version_2026.09.04 python -c "import sTiles; print(sTiles.__version__)"
+find $STILES_CACHE_DIR -name 'libstiles.so'        # one hit under .../libstiles-linux-x86_64/
+```
+
+Notes:
+
+- The x86_64 asset is the AVX2 build with MKL embedded. Genoa supports it; the
+  import itself checks the CPU and fails with a clear message otherwise.
+- If the download is refused (no proxy on the login node), download the asset
+  on another machine from
+  `https://github.com/esmail-abdulfattah/sTiles/releases/tag/Version_2026.09.04`,
+  copy it to Shaheen and point `STILES_LIB=/path/to/libstiles.so` to it in
+  the shell set-up and in the job scripts instead of `STILES_CACHE_DIR`.
+- Jobs run with `STILES_NO_DOWNLOAD=1`, so a missing cache fails fast instead
+  of hanging on the network.
+
+Quick functional check on the login node (small problem, 2 threads, ~1 min):
+
+```bash
+cd $DALIA/examples/gst_ghcn
+python run.py --inputs small --solver stiles --threads 2 --max_iter 50
+```
+
+Expected at the end: `Norm (theta - theta_ref)` around 1e-9 and
+`Norm (x - x_ref)` around 1e-7 against the Serinv reference shipped with the
+example, 21 iterations.
+
+## 3. Verify on a compute node (debug partition, ~5 min)
+
+```bash
+salloc --account=<project_id> --partition=debug --nodes=1 --time=00:20:00
+# inside the allocation (the environment is inherited; re-source if not):
+cd $DALIA/examples/gst_ghcn
+export STILES_NO_DOWNLOAD=1 OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8
+srun -n 1 -c 8 --cpu-bind=cores python run.py --inputs small --solver stiles --threads 8 --max_iter 50
+srun -n 1 -c 8 --cpu-bind=cores python run.py --inputs small --solver serinv --max_iter 50
+exit
+```
+
+Both must print the same hyperparameters and tiny norms against the reference.
+If sTiles fails to import here but worked on the login node, the cache
+directory is not under `/scratch`.
+
+## 4. Data: download and prepare the inputs (login node)
+
+```bash
+mkdir -p /scratch/$USER/ghcn_raw && cd /scratch/$USER/ghcn_raw
+curl -O https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_year/2022.csv.gz      # 175 MB
+curl -O https://www.ncei.noaa.gov/pub/data/ghcn/daily/ghcnd-stations.txt        # 11 MB
+
+cd $DALIA/examples/gst_ghcn
+python prepare_inputs.py --raw-dir /scratch/$USER/ghcn_raw --name full --mesh-nodes 1250
+```
+
+The first call parses the year file (~30 s) and caches it next to the raw
+files; the full inputs take about a minute and 370 MB. Expected summary:
+13,718 stations, 365 days, 4,310,481 observations, ns = 1250, nt = 365,
+n_latent 456,250, 8 fixed effects.
+
+## 5. Validate the full case before spending node-hours (debug, ~10 min)
+
+One process, 32 threads, one L-BFGS iteration, to check loading, the symbolic
+analysis, the memory and the time per evaluation on Genoa:
+
+```bash
+cd $DALIA/examples/gst_ghcn
+sbatch --account=<project_id> --partition=debug --nodes=1 --ntasks=1 --cpus-per-task=32 \
+       --hint=nomultithread --time=00:30:00 --job-name=ghcn_check --output=%x.%j.out \
+       --wrap="export STILES_NO_DOWNLOAD=1 OMP_NUM_THREADS=32 OPENBLAS_NUM_THREADS=32; \
+               srun --cpu-bind=cores python run.py --inputs full --solver stiles --threads 32 --max_iter 1 --no-reference --tag check"
+```
+
+Look at the output file for:
+
+- `sTiles symbolic analysis #1: n=456258, nnz(L)=595192293, ... s` (23 s on the Spark);
+- `Iteration:  1 (took: ... )`: 9 function evaluations in sequence, 78 s on the
+  Spark with 8 threads. Divide by 9 for the time per evaluation;
+- the `RESULT ...` line and `outputs_full_stiles_r1_t32_check/summary.json`;
+- `sacct -j <jobid> --format=JobID,Elapsed,MaxRSS` for the peak memory
+  (24.9 GB per process on the Spark; this is what bounds the ranks sweep).
+
+If the time per evaluation is far above the Spark's 8.7 s at 8 threads, the
+embedded MKL may be taking a slow path on AMD; try `--threads 8` for a direct
+comparison before launching the sweeps.
+
+## 6. Launch the sweeps (login node)
+
+```bash
+cd $DALIA/examples/gst_ghcn
+./sweep_threads_shaheen3.sh <project_id>              # 9 jobs: 1 process x {1,2,4,8,16,32,48,96,192} threads
+./sweep_ranks_shaheen3.sh   <project_id>              # 5 jobs: 1x192 2x96 6x32 9x21 12x16, sTiles
+./sweep_ranks_shaheen3.sh   <project_id> full serinv  # 5 jobs: same configurations, Serinv baseline
+squeue -u $USER
+```
+
+All jobs are single-node, exclusive on `workq`. Expected durations (to be
+confirmed by step 5): 1 thread 3 to 5 h, 2 threads 2 to 3 h, 4 threads about
+1 h, 8 and more threads 15 to 45 min, the 12x16 runs under 10 min. Total about
+12 node-hours (2,300 core-hours). Time limits in the scripts are 8 h (1 and 2
+threads), 4 h (up to 8 threads, 1 and 2 ranks), 2 h otherwise.
+
+Each job writes `outputs_full_<solver>_r<ranks>_t<threads>_<jobid>/summary.json`
+and a `RESULT ...` line in `ghcn_*.<jobid>.out`. Check progress with
+
+```bash
+grep -h "RESULT\|Traceback\|CANCELLED\|oom" ghcn_*.out
+sacct -u $USER --format=JobName%22,Elapsed,MaxRSS,State -S today
+```
+
+If the 12x16 job dies with an out-of-memory kill, the sTiles analysis peaks
+coincide on the 12 ranks; keep 9x21 as the top configuration. To re-run
+only one configuration pass its parameters, e.g.
+`./sweep_threads_shaheen3.sh <project_id> full 48`.
+
+## 7. Collect and plot
+
+On Shaheen:
+
+```bash
+cd $DALIA/examples/gst_ghcn
+python collect_sweep.py                                        # sTiles -> stiles_fullsolve.csv
+python collect_sweep.py --solver serinv --out serinv_fullsolve.csv
+```
+
+Copy both CSVs to the poster repository (through the multiplexed SSH
+connection, no new OTP):
+
+```bash
+scp shaheen:/scratch/<user>/src/DALIA/examples/gst_ghcn/{stiles,serinv}_fullsolve.csv \
+    ~/projects/dalia/repositories/KAUST_POSTER/figs_dalia/
+cd ~/projects/dalia/repositories/KAUST_POSTER/figs_dalia
+conda activate dalia_mpi && python make_figures.py             # layout C; or --stiles-layout A
+cd .. && conda activate tex && tectonic dalia_poster.tex
+```
+
+Then replace the "Measured" bullet of the sTiles box in `dalia_poster.tex`
+with the machine (Shaheen III, 2x AMD Genoa, 192 cores, 384 GB), the problem
+size and the headline numbers.
+
+## 8. Troubleshooting
+
+| symptom | cause and fix |
+|---|---|
+| `could not download a solver; check the network, or set STILES_LIB` on a compute node | cache not under `/scratch`, or `STILES_CACHE_DIR` not exported in the job; redo step 2 and check the `export` lines |
+| `Illegal instruction` at the first factorization | wrong native build; the default x86_64 asset needs AVX2, which Genoa has; make sure `STILES_VARIANT` is unset |
+| `ValueError: This file contains pickled (object) data` | LFS pointers instead of data: `git lfs pull` in `$DALIA` |
+| `error: account specification` at submission | missing or wrong `--account`; `sacctmgr show assoc user=$USER format=account` lists the valid ones |
+| job killed, `sacct` shows `OUT_OF_MEMORY` | too many ranks per node for this problem; use 9x21 as the top configuration |
+| `theta must be positive` crash at iteration 2 | the observation precision lost its Gamma prior (log-scale optimisation); keep `run.py` as shipped |
+| sTiles time per evaluation far above the Spark's 8.7 s at 8 threads | compare `--threads 8`; if still slow, the embedded MKL is on a slow path, report it with the `sacct` and output files |
