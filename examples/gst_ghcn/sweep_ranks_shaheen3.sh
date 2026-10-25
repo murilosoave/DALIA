@@ -33,7 +33,7 @@ for cfg in "1 192" "2 96" "6 32" "9 21" "12 16"; do
         SOLVER_ARGS="--solver ${SOLVER}"
     fi
     # the single-process run does all evaluations in sequence: longer limit
-    if [ "$RANKS" -le 2 ]; then WALL=04:00:00; else WALL=02:00:00; fi
+    if [ "$RANKS" -le 2 ]; then WALL=06:00:00; else WALL=03:00:00; fi
     sbatch <<SLURM
 #!/bin/bash -l
 #SBATCH --job-name="ghcn_${SOLVER}_${RANKS}x${THREADS}"

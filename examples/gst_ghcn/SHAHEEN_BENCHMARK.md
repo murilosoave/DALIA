@@ -142,6 +142,14 @@ race (about 2 % of solves after a factorization were wrong at 8 cores on an
 81k matrix in our measurements). Set `"stiles_tile_mode": "sparse"` in the
 solver config of `run.py` to trade that for the single-tile limitation.
 
+Speed of the releases, measured on the Spark (one process, 8 threads, full
+GHCN case, nothing else running): `Version_2026.09.04` does one L-BFGS
+iteration in 79 s, `Version_2026.10.19` in 129 s (sparse) or 139 s (auto),
+with a different ordering and 7 % more factor entries. If the absolute
+numbers matter more than using the latest release, pin the older one
+(`pip install stiles==2026.9.4`, `STILES_RELEASE_TAG=Version_2026.09.04`
+at the first import); the results are the same to 1e-7.
+
 Quick functional check on the login node (small problem, 2 threads, ~1 min):
 
 ```bash
@@ -221,11 +229,14 @@ cd $DALIA/examples/gst_ghcn
 squeue -u $USER
 ```
 
-All jobs are single-node, exclusive on `workq`. Expected durations (to be
-confirmed by step 5): 1 thread 3 to 5 h, 2 threads 2 to 3 h, 4 threads about
-1 h, 8 and more threads 15 to 45 min, the 12x16 runs under 10 min. Total about
-12 node-hours (2,300 core-hours). Time limits in the scripts are 8 h (1 and 2
-threads), 4 h (up to 8 threads, 1 and 2 ranks), 2 h otherwise.
+All jobs are single-node, exclusive on `workq`. Measured on Shaheen with
+`Version_2026.10.19` (one process): 24.6 s per evaluation at 8 threads,
+16.9 s at 32 threads, 65 s symbolic analysis, 25.4 GB peak memory. With
+about 25 L-BFGS iterations plus the covariance phase, expect 1.5 to 2 h at
+8 threads, 6 to 7 h at 1 thread, under 1 h from 32 threads on, and 20 to
+40 min for the 9x21 and 12x16 runs. Total about 25 node-hours. Time limits
+in the scripts: 12 h (1 and 2 threads), 6 h (up to 8 threads, 1 and 2
+ranks), 4 h (threads) and 3 h (ranks) otherwise.
 
 Each job writes `outputs_full_<solver>_r<ranks>_t<threads>_<jobid>/summary.json`
 and a `RESULT ...` line in `ghcn_*.<jobid>.out`. Check progress with

@@ -19,9 +19,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 for T in $THREADS_LIST; do
     # generous limits: the 1-thread run of the full case can take several hours
-    if   [ "$T" -le 2 ]; then WALL=08:00:00
-    elif [ "$T" -le 8 ]; then WALL=04:00:00
-    else WALL=02:00:00; fi
+    if   [ "$T" -le 2 ]; then WALL=12:00:00
+    elif [ "$T" -le 8 ]; then WALL=06:00:00
+    else WALL=04:00:00; fi
     sbatch <<SLURM
 #!/bin/bash -l
 #SBATCH --job-name="ghcn_t${T}"
