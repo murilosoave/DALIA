@@ -160,6 +160,12 @@ process; on Shaheen the 9 (or 18) function evaluations run on separate ranks.
 
 ## Known limitations
 
+- DALIA's sTiles solver runs in `auto` tile mode by default (since 2026-10-25).
+  libstiles is not deterministic with several threads in that mode (a small
+  fraction of solves can be wrong, see `stiles_issue/ISSUE.md`); the `sparse`
+  mode is deterministic but fails on single-tile matrices with
+  `Version_2026.10.19`. Pass `stiles_tile_mode` in the solver config to change it.
+
 - The paper's `v(s, t)` term (spatially varying seasonal amplitude) cannot be
   expressed with the current submodels.
 - Adding the static `spatial` submodel on the same mesh (inputs are generated

@@ -36,6 +36,8 @@ def parse_args():
     p.add_argument("--solver", default="stiles", choices=["stiles", "serinv", "scipy", "dense"])
     p.add_argument("--threads", type=int, default=None, help="sTiles threads per process (default: cores / processes per node)")
     p.add_argument("--tile-size", type=int, default=None, help="sTiles tile size (default: solver default)")
+    p.add_argument("--tile-mode", default=None, choices=["auto", "dense", "semisparse", "sparse"],
+                   help="sTiles tile mode (default: solver default, auto)")
     p.add_argument("--solver_min_p", type=int, default=1, help="processes per Serinv solve (distributed solver if > 1)")
     p.add_argument("--max_iter", type=int, default=100)
     p.add_argument("--no-reference", action="store_true", help="do not compare against reference_outputs")
@@ -105,6 +107,8 @@ if __name__ == "__main__":
             solver["stiles_threads"] = args.threads
         if args.tile_size is not None:
             solver["stiles_tile_size"] = args.tile_size
+        if args.tile_mode is not None:
+            solver["stiles_tile_mode"] = args.tile_mode
     dalia_dict = {
         "solver": solver,
         "minimize": {"max_iter": args.max_iter, "gtol": 1e-3, "disp": True},
@@ -162,6 +166,7 @@ if __name__ == "__main__":
         "ranks": int(comm_size),
         "threads": threads,
         "tile_size": args.tile_size,
+        "tile_mode": args.tile_mode or "auto",
         "n": int(model.n_latent_parameters),
         "n_observations": meta["n_observations"],
         "wall_time_s": elapsed,

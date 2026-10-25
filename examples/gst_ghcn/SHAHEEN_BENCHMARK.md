@@ -6,13 +6,18 @@ the number of threads (one process) and against the number of processes on one
 node, plus the Serinv baseline. The result feeds `figs_dalia/stiles_threads.pdf`
 of the KAUST poster.
 
-Assumed done (see `install.md`, "On Shaheen III@KAUST"): the conda environment
-`$MY_SW/envs/dalia_hmpi_shaheen` with `mpi4py` built against Cray MPICH,
-`git-lfs` in `~/.local/bin`, and the test suite passing from
-`/scratch/$USER/src/DALIA/tests`. Everything below runs under `/scratch`;
-`/home` is not visible from compute nodes.
+Everything below runs on Shaheen III (HPE Cray EX, CPU nodes with 2x AMD
+Genoa, 192 physical cores and 384 GB each). Conventions that shape every step:
 
-Shell set-up used in every step (put it in `~/.bashrc` or source it):
+- `/home` is not mounted on compute nodes and `/project` is read-only there,
+  so code, data, conda environments and outputs live under `/scratch/$USER`.
+  Software goes in `$MY_SW` (`/scratch/$USER/iops/sw`), which is not purged.
+- Compute nodes have no internet: clone, download and install on login nodes.
+- Every job is charged to a project: `#SBATCH --account=<project_id>`.
+  `sacctmgr show assoc user=$USER format=account` lists the valid ids.
+
+Shell set-up used in every step (put it in `~/.bashrc` or source it; the
+environment it refers to is created in step 0):
 
 ```bash
 module switch PrgEnv-cray PrgEnv-gnu
@@ -23,20 +28,66 @@ export STILES_BIND=0
 export DALIA=/scratch/$USER/src/DALIA
 ```
 
+## 0. Install DALIA on Shaheen (once, login node)
+
+Condensed from `install.md`, "On Shaheen III@KAUST". Skip what is already
+in place.
+
+Login: `ssh <username>@shaheen.hpc.kaust.edu.sa` (password + one-time code;
+with `ControlMaster` in `~/.ssh/config` later sessions reuse the connection).
+
+1. git-lfs in your user space (the example data are LFS-tracked):
+    ```bash
+    mkdir -p ~/.local/bin && cd $MY_SW
+    curl -LO https://github.com/git-lfs/git-lfs/releases/download/v3.6.1/git-lfs-linux-amd64-v3.6.1.tar.gz
+    tar xzf git-lfs-linux-amd64-v3.6.1.tar.gz && cp git-lfs-3.6.1/git-lfs ~/.local/bin/
+    export PATH=$HOME/.local/bin:$PATH
+    ```
+2. Clone the repositories:
+    ```bash
+    mkdir -p /scratch/$USER/src && cd /scratch/$USER/src
+    git clone https://github.com/murilosoave/DALIA && (cd DALIA && git lfs install && git lfs pull)
+    git clone https://github.com/vincent-maillou/serinv
+    ```
+3. Miniconda in the high-IOPS tier (the installer is on the system):
+    ```bash
+    mkdir -p $MY_SW && cd $MY_SW
+    bash /sw/sources/miniconda/conda24.1.2-python3.12.1/Miniconda3-latest-Linux-x86_64.sh -b -s -p $MY_SW/miniconda3-amd64 -u
+    source $MY_SW/miniconda3-amd64/bin/activate
+    conda install -y -c conda-forge mamba==1.5.8
+    ```
+4. The base environment (x86 file; DALIA needs Python 3.13):
+    ```bash
+    module switch PrgEnv-cray PrgEnv-gnu
+    mamba env create -f /scratch/$USER/src/DALIA/envs/dalia_base_x86.yml -p $MY_SW/envs/dalia_base_shaheen
+    conda clean --all -y
+    conda activate $MY_SW/envs/dalia_base_shaheen
+    cd /scratch/$USER/src/DALIA && python -m pip install --no-deps --editable .
+    cd /scratch/$USER/src/serinv && python -m pip install --no-deps --editable .
+    ```
+5. The MPI environment: clone it and build `mpi4py` against Cray MPICH
+   through the compiler wrapper (never `conda install mpi4py`):
+    ```bash
+    conda deactivate
+    conda create -p $MY_SW/envs/dalia_hmpi_shaheen --clone $MY_SW/envs/dalia_base_shaheen -y
+    conda activate $MY_SW/envs/dalia_hmpi_shaheen
+    MPICC=cc python -m pip install --no-cache-dir --no-binary mpi4py mpi4py
+    conda clean --all -y
+    python -c "from mpi4py import MPI; print(MPI.Get_library_version())"   # must say CRAY MPICH
+    ```
+6. Test suite, from the `tests/` directory (it uses relative paths), inside an
+   allocation on the debug partition:
+    ```bash
+    salloc --account=<project_id> --partition=debug --nodes=1 --time=00:30:00
+    cd /scratch/$USER/src/DALIA/tests && ./runner.sh
+    exit
+    ```
+   Expected: all CPU and MPI tests pass; the GPU parametrisations are skipped.
+
 ## 1. Get this branch onto Shaheen
 
-On the machine where the example was developed, commit the example and push the
-branch (the small inputs are LFS-tracked `.npz` files, so `git-lfs` must be
-installed there too):
-
-```bash
-cd DALIA && git checkout bench/shareen_cluster
-git add examples/gst_ghcn examples/run_example_shaheen3_kaust.sh install.md .gitignore
-git commit -m "feat: GHCN-Daily spatio-temporal example and Shaheen benchmark scripts"
-git push origin bench/shareen_cluster
-```
-
-On a Shaheen login node:
+The example and the benchmark scripts are on branch `bench/shareen_cluster`
+of `github.com/murilosoave/DALIA` (commit `2d501b4` or later). On a login node:
 
 ```bash
 cd $DALIA && git fetch && git checkout bench/shareen_cluster && git lfs pull
@@ -47,16 +98,26 @@ ls examples/gst_ghcn/inputs_small/inputs_spatio_temporal/   # c0 g1 g2 g3 m0 m1 
 ## 2. Install sTiles in the environment (login node, internet needed)
 
 The `stiles` wheel is pure Python; the native `libstiles.so` is downloaded
-from GitHub on the first import and cached. Pin the versions used for the
-Spark results so the numbers are comparable (`sTiles 2026.9.4`, release
-`Version_2026.09.04`, libstiles 3.0.0):
+from the GitHub releases of `github.com/esmail-abdulfattah/sTiles` on the
+first import and cached. Use the most recent release (the wheel and the
+native library share the version; `Version_2026.10.19` at the time of
+writing) and record the version in the benchmark notes:
 
 ```bash
-python -m pip install stiles==2026.9.4
+python -m pip install -U stiles
 mkdir -p $STILES_CACHE_DIR
-STILES_RELEASE_TAG=Version_2026.09.04 python -c "import sTiles; print(sTiles.__version__)"
-find $STILES_CACHE_DIR -name 'libstiles.so'        # one hit under .../libstiles-linux-x86_64/
+python -c "import sTiles; print(sTiles.__version__)"
+ls $STILES_CACHE_DIR                                  # one Version_<date> directory, same date as the wheel
+# if the directory is older than the wheel (a stale cache), force the download:
+python -m sTiles update
+find $STILES_CACHE_DIR -name 'libstiles.so'           # under .../libstiles-linux-x86_64/
 ```
+
+The import resolves the newest release tag through the GitHub API and
+downloads the matching asset, so both calls need internet (login node). To
+pin a specific release later, for reproducibility, export
+`STILES_RELEASE_TAG=Version_<date>` before the first import and install the
+wheel of the same date.
 
 Notes:
 
@@ -64,11 +125,22 @@ Notes:
   import itself checks the CPU and fails with a clear message otherwise.
 - If the download is refused (no proxy on the login node), download the asset
   on another machine from
-  `https://github.com/esmail-abdulfattah/sTiles/releases/tag/Version_2026.09.04`,
+  `https://github.com/esmail-abdulfattah/sTiles/releases/latest` (asset
+  `libstiles-linux-x86_64.zip`),
   copy it to Shaheen and point `STILES_LIB=/path/to/libstiles.so` to it in
   the shell set-up and in the job scripts instead of `STILES_CACHE_DIR`.
 - Jobs run with `STILES_NO_DOWNLOAD=1`, so a missing cache fails fast instead
   of hanging on the network.
+
+Note on tile modes: DALIA's sTiles solver defaults to `stiles_tile_mode =
+"auto"`. The `sparse` mode is the only one free of the multithreaded
+non-determinism of libstiles (`stiles_issue/ISSUE.md`), but from
+`Version_2026.10.19` it fails on matrices that fit in a single tile
+(n <= `stiles_tile_size`), which breaks the small models of the test suite.
+With `auto` all 342 sTiles tests pass with the new release; the price is the
+race (about 2 % of solves after a factorization were wrong at 8 cores on an
+81k matrix in our measurements). Set `"stiles_tile_mode": "sparse"` in the
+solver config of `run.py` to trade that for the single-tile limitation.
 
 Quick functional check on the login node (small problem, 2 threads, ~1 min):
 
@@ -202,5 +274,6 @@ size and the headline numbers.
 | `ValueError: This file contains pickled (object) data` | LFS pointers instead of data: `git lfs pull` in `$DALIA` |
 | `error: account specification` at submission | missing or wrong `--account`; `sacctmgr show assoc user=$USER format=account` lists the valid ones |
 | job killed, `sacct` shows `OUT_OF_MEMORY` | too many ranks per node for this problem; use 9x21 as the top configuration |
+| `sTiles_chol failed (status -104)` on a tiny model | `stiles_tile_mode = "sparse"` with libstiles 2026.10.19 and n <= tile size; use the default `auto` mode or `Version_2026.09.04` |
 | `theta must be positive` crash at iteration 2 | the observation precision lost its Gamma prior (log-scale optimisation); keep `run.py` as shipped |
 | sTiles time per evaluation far above the Spark's 8.7 s at 8 threads | compare `--threads 8`; if still slow, the embedded MKL is on a slow path, report it with the `sacct` and output files |
