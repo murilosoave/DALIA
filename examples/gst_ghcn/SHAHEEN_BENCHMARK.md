@@ -226,6 +226,7 @@ cd $DALIA/examples/gst_ghcn
 ./sweep_threads_shaheen3.sh <project_id>              # 9 jobs: 1 process x {1,2,4,8,16,32,48,96,192} threads
 ./sweep_ranks_shaheen3.sh   <project_id>              # 5 jobs: 1x192 2x96 6x32 9x21 12x16, sTiles
 ./sweep_ranks_shaheen3.sh   <project_id> full serinv  # 5 jobs: same configurations, Serinv baseline
+./sweep_nodes_shaheen3.sh   <project_id>              # 3 jobs: 1, 3 and 9 nodes, one rank x 96 threads per node
 squeue -u $USER
 ```
 
