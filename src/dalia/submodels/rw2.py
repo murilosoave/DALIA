@@ -1,8 +1,7 @@
 # Copyright 2024-2025 DALIA authors. All rights reserved.
-import numpy as np
 from tabulate import tabulate
 
-from dalia import NDArray, sp, xp
+from dalia import sp, xp
 from dalia.configs.constraints_config import (
     LinearConstraintConfig,
     SumToZeroConstraintConfig,
@@ -46,22 +45,7 @@ class RW2SubModel(SubModel):
                 f"RW2 submodel requires at least 3 latent parameters, got {n}."
             )
 
-        # --- Load the locations of the latent parameters
-        locations_file = self.input_path.joinpath("locations.npy")
-        self.regular_grid = not locations_file.exists()
-        if self.regular_grid:
-            locations = np.arange(n, dtype=float)
-        else:
-            locations = np.load(locations_file)
-        self.locations: NDArray = xp.asarray(locations, dtype=xp.float64)
-
-        if self.locations.shape != (n,):
-            raise ValueError(
-                f"RW2 submodel expects one location per latent parameter ({n}), "
-                f"got locations of shape {self.locations.shape}."
-            )
-        if not bool((xp.diff(self.locations) > 0).all()):
-            raise ValueError("RW2 submodel locations must be strictly increasing.")
+        self.load_locations()
 
     def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:
         """Construct the prior precision matrix Q = tau * R."""

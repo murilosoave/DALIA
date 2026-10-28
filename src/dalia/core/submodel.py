@@ -123,6 +123,34 @@ class SubModel(ABC):
         """Construct the prior precision matrix."""
         ...
 
+    def load_locations(self) -> NDArray:
+        """Load the locations of the latent parameters from `locations.npy` in
+        the input directory, one per latent parameter, strictly increasing.
+        Without the file the grid is regular, s = 0, ..., n - 1.
+
+        Sets `self.locations` and `self.regular_grid`, and returns the locations.
+        """
+        n = self.n_latent_parameters
+        locations_file = self.input_path.joinpath("locations.npy")
+        self.regular_grid: bool = not locations_file.exists()
+        if self.regular_grid:
+            locations = np.arange(n, dtype=float)
+        else:
+            locations = np.load(locations_file)
+        self.locations: NDArray = xp.asarray(locations, dtype=xp.float64)
+
+        if self.locations.shape != (n,):
+            raise ValueError(
+                f"{self.submodel_type} submodel expects one location per latent "
+                f"parameter ({n}), got locations of shape {self.locations.shape}."
+            )
+        if not bool((xp.diff(self.locations) > 0).all()):
+            raise ValueError(
+                f"{self.submodel_type} submodel locations must be strictly increasing."
+            )
+
+        return self.locations
+
     def load_a_predict(self) -> sp.sparse.csc_matrix:
         """Load the design matrix for prediction."""
         self.a_predict: sp.sparse.csc_matrix = sp.sparse.csc_matrix(
