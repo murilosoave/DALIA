@@ -1,6 +1,7 @@
-# Intrinsic RW2 submodel, with its automatic sum-to-zero and zero-linear-trend
-# constraints, and an intercept, against the exact intrinsic model computed densely
-# without any diagonal (reduced coordinates, normaliser (n - 2) / 2 log tau).
+# Intrinsic RW2 submodel on irregular locations, with its automatic sum-to-zero
+# and zero-linear-trend constraints, and an intercept, against the exact intrinsic
+# model computed densely without any diagonal (reduced coordinates, normaliser
+# (n - 2) / 2 log tau, structure matrix H^T A^{-1} H of Lindgren & Rue 2008).
 
 import numpy as np
 import pytest
@@ -16,6 +17,8 @@ from dalia.submodels import RegressionSubModel, RW2SubModel
 N = 20
 PREC_INTERCEPT = 0.001
 RANK_DEFICIENCY = 2
+# irregular locations, gaps between 0.3 and 2.1
+S = np.cumsum(0.3 + 1.8 * (np.arange(N) * 7 % 11) / 10.0)
 
 THETAS = {
     "gaussian": [np.array([1.0, 4.0]), np.array([0.2, 2.0]), np.array([1.7, 7.0])],
@@ -28,6 +31,7 @@ def build_model(path, likelihood, diagonal):
     (path / "inputs_rw").mkdir()
     (path / "inputs_regression").mkdir()
     sps.save_npz(path / "inputs_rw" / "a.npz", sps.identity(N, format="csr"))
+    np.save(path / "inputs_rw" / "locations.npy", S)
     sps.save_npz(path / "inputs_regression" / "a.npz", sps.csr_matrix(np.ones((N, 1))))
     u = np.cumsum(np.cumsum(rng.normal(size=N) * 0.2))
     u = u - u.mean()
@@ -83,6 +87,20 @@ def make_config(solver):
     )
 
 
+def structure_matrix(s):
+    """R = H^T A^{-1} H of Lindgren & Rue (2008), Section 2, built densely."""
+    n = len(s)
+    d = np.diff(s)
+    H = np.zeros((n, n))
+    A = np.ones(n)
+    for i in range(1, n - 1):
+        H[i, i - 1] = 1 / d[i - 1]
+        H[i, i] = -(1 / d[i - 1] + 1 / d[i])
+        H[i, i + 1] = 1 / d[i]
+        A[i] = (d[i - 1] + d[i]) / 2
+    return H.T @ np.diag(1 / A) @ H
+
+
 def reference(model, theta_internal, likelihood):
     """Exact intrinsic RW2, no diagonal: Laplace approximation in reduced
     coordinates x = Z z, Z an orthonormal basis of null(C). Returns
@@ -94,9 +112,8 @@ def reference(model, theta_internal, likelihood):
     y = np.asarray(model.y)
     Z = scipy.linalg.null_space(np.asarray(model.C))
 
-    D2 = np.diff(np.eye(N), n=2, axis=0)
     Q = np.zeros((N + 1, N + 1))
-    Q[:N, :N] = tau * D2.T @ D2
+    Q[:N, :N] = tau * structure_matrix(S)
     Q[N, N] = PREC_INTERCEPT
 
     if likelihood == "gaussian":
@@ -150,9 +167,8 @@ def test_mode_and_sd_match_intrinsic_reference(tmp_path, solver, likelihood):
     x = np.asarray(model.x).copy()
     sd = np.sqrt(np.asarray(dalia.get_marginal_variances_latent_parameters()))
     _, x_ref, sd_ref = reference(model, theta, likelihood)
-    t = np.arange(N, dtype=float)
 
     np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-6)
     np.testing.assert_allclose(sd, sd_ref, rtol=1e-6)
     assert abs(x[:N].sum()) < 1e-10
-    assert abs((t - t.mean()) @ x[:N]) < 1e-9
+    assert abs((S - S.mean()) @ x[:N]) < 1e-9

@@ -1,7 +1,8 @@
 # Copyright 2024-2025 DALIA authors. All rights reserved.
+import numpy as np
 from tabulate import tabulate
 
-from dalia import sp, xp
+from dalia import NDArray, sp, xp
 from dalia.configs.constraints_config import (
     LinearConstraintConfig,
     SumToZeroConstraintConfig,
@@ -12,12 +13,22 @@ from dalia.utils import add_str_header
 
 
 class RW2SubModel(SubModel):
-    """Fit a random walk of order 2, x_{t+2} - 2 x_{t+1} + x_t ~ N(0, 1 / tau).
+    """Fit a random walk of order 2 on the locations s_1 < ... < s_n, the
+    Galerkin approximation of the integrated Wiener process d^2 x / dt^2 = dW / dt
+    (Lindgren & Rue 2008, "On the second-order random walk model for irregular
+    locations", Section 2).
 
-    Its precision matrix is Q = tau * R, with structure matrix R = D^T D and D
-    the matrix of second differences (Rue & Held 2005, Section 3.4.1). The model
-    is intrinsic: R has rank n - 2, the constant and the linear trend are in its
-    null space.
+    Its precision matrix is Q = tau * R, with structure matrix R = H^T A^{-1} H:
+    H is tridiagonal with interior rows (1 / d_{i-1}, -(1 / d_{i-1} + 1 / d_i),
+    1 / d_i) and zero first and last rows, d_i = s_{i+1} - s_i the gaps, and A
+    the diagonal matrix of trapezoid weights (d_{i-1} + d_i) / 2. On a regular
+    grid, d_i = 1, R = D^T D with D the matrix of second differences
+    (Rue & Held 2005, Section 3.4.1). The model is intrinsic: R has rank n - 2,
+    the constant and the locations s are in its null space.
+
+    The locations are read from `locations.npy` in the input directory, one
+    per latent parameter, strictly increasing. Without the file the grid is
+    regular, s = 0, ..., n - 1. R-INLA: f(..., model = "rw2", values = s).
     """
 
     intrinsic: bool = True
@@ -35,27 +46,45 @@ class RW2SubModel(SubModel):
                 f"RW2 submodel requires at least 3 latent parameters, got {n}."
             )
 
+        # --- Load the locations of the latent parameters
+        locations_file = self.input_path.joinpath("locations.npy")
+        self.regular_grid = not locations_file.exists()
+        if self.regular_grid:
+            locations = np.arange(n, dtype=float)
+        else:
+            locations = np.load(locations_file)
+        self.locations: NDArray = xp.asarray(locations, dtype=xp.float64)
+
+        if self.locations.shape != (n,):
+            raise ValueError(
+                f"RW2 submodel expects one location per latent parameter ({n}), "
+                f"got locations of shape {self.locations.shape}."
+            )
+        if not bool((xp.diff(self.locations) > 0).all()):
+            raise ValueError("RW2 submodel locations must be strictly increasing.")
+
     def construct_Q_prior(self, **kwargs) -> sp.sparse.coo_matrix:
         """Construct the prior precision matrix Q = tau * R."""
 
         # kwargs expects hyperparameters in external scale
         tau = kwargs.get("tau")
-        n = self.n_latent_parameters
 
-        # R = D^T D, D the (n - 2, n) matrix of second differences: pentadiagonal
-        # with diagonal (1, 5, 6, ..., 6, 5, 1), first off-diagonal
-        # (-2, -4, ..., -4, -2) and second off-diagonal 1
-        diag = [6 * tau] * n
-        diag[0] = diag[-1] = tau
-        diag[1] = diag[-2] = 5 * tau
-        off_diag_1 = [-4 * tau] * (n - 1)
-        off_diag_1[0] = off_diag_1[-1] = -2 * tau
-        off_diag_2 = [tau] * (n - 2)
+        # R = H^T A^{-1} H, pentadiagonal, from the gaps d_i = s_{i+1} - s_i
+        d = xp.diff(self.locations)
 
-        Q_prior = sp.sparse.diags(
-            [off_diag_2, off_diag_1, diag, off_diag_1, off_diag_2],
-            [-2, -1, 0, 1, 2],
-        )
+        # H: first and last rows are zero, interior row i holds
+        # H[i, i-1] = 1 / d_{i-1}, H[i, i] = -(1 / d_{i-1} + 1 / d_i), H[i, i+1] = 1 / d_i
+        lower = xp.concatenate([1.0 / d[:-1], xp.zeros(1)])
+        main = xp.concatenate([xp.zeros(1), -(1.0 / d[:-1] + 1.0 / d[1:]), xp.zeros(1)])
+        upper = xp.concatenate([xp.zeros(1), 1.0 / d[1:]])
+        H = sp.sparse.diags([lower, main, upper], [-1, 0, 1])
+
+        # A: diagonal of trapezoid weights, A_11 = d_1 / 2, A_ii = (d_{i-1} + d_i) / 2,
+        # A_nn = d_{n-1} / 2
+        weights = xp.concatenate([d[:1] / 2.0, (d[:-1] + d[1:]) / 2.0, d[-1:] / 2.0])
+        A_inv = sp.sparse.diags(1.0 / weights)
+
+        Q_prior = tau * (H.T @ A_inv @ H)
 
         # need this -> otherwise there might be a sorting issue
         Q_prior = Q_prior.tocsr()
@@ -64,16 +93,12 @@ class RW2SubModel(SubModel):
         return Q_prior.tocoo()
 
     def _construct_identifiability_constraints(self) -> list:
-        """The null space of R is spanned by the constant and the linear trend,
+        """The null space of R is spanned by the constant and the locations s,
         so the prior determines neither the level nor the slope of the field:
-        sum(x) = 0 and sum((t - mean(t)) x) = 0, t = 0, ..., n - 1. The trend
-        row is centred to be orthogonal to the sum-to-zero row."""
-        n = self.n_latent_parameters
-        t = xp.arange(n, dtype=xp.float64)
-        trend = t - t.mean()
+        sum(x) = 0 and sum(s x) = 0."""
         return [
             SumToZeroConstraintConfig(),
-            LinearConstraintConfig(C=[trend.tolist()]),
+            LinearConstraintConfig(C=[self.locations.tolist()]),
         ]
 
     def __str__(self) -> str:
@@ -86,6 +111,7 @@ class RW2SubModel(SubModel):
             ["Number of Latent Parameters", self.n_latent_parameters],
             ["tau", f"{self.config.tau:.3f}"],
             ["Diagonal", f"{self.config.diagonal:.1e}"],
+            ["Locations", "regular grid" if self.regular_grid else "irregular"],
         ]
         submodel_table = tabulate(
             values,
