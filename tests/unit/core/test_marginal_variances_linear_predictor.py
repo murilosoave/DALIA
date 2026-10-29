@@ -95,14 +95,14 @@ def test_kernel_raises_on_a_missing_covariance_entry():
 
 
 @pytest.mark.parametrize("solver", ["dense", "scipy"])
-def test_marginal_variances_observations(tmp_path, solver):
+def test_marginal_variances_linear_predictor(tmp_path, solver):
     model = build_model(tmp_path)
     config = dalia_config.parse_config({"solver": {"type": solver}, "verbosity": 0})
     dalia = DALIA(model=model, config=config)
     dalia._evaluate_f(xp.asarray(THETA))
     theta_external, x_star = model.theta_external, model.x.copy()
 
-    variances = dalia.get_marginal_variances_observations(theta_external, x_star)
+    variances = dalia.get_marginal_variances_linear_predictor(theta_external, x_star)
 
     A = get_host(model.a.toarray())
     Sigma = np.linalg.inv(get_host(model.Q_conditional.toarray()))

@@ -338,7 +338,7 @@ class DALIA:
 
         # compute marginal variances of the observations
         # TODO: only run by default when dense multiplcation issue is fixed, see issue #78
-        # marginal_variances_observations = self.get_marginal_variances_observations(
+        # marginal_variances_linear_predictor = self.get_marginal_variances_linear_predictor(
         #     theta_star, x_star
         # )
 
@@ -354,8 +354,8 @@ class DALIA:
             "cov_theta_internal": self.cov_theta_internal,
             "marginal_variances_latent": marginal_variances_latent,
             "optimization_iterations": self.accepted_iter,
-            # "marginal_variances_observations": get_host(
-            #     marginal_variances_observations
+            # "marginal_variances_linear_predictor": get_host(
+            #     marginal_variances_linear_predictor
             # ),
         }
         synchronize(comm=self.comm_world)
@@ -1237,10 +1237,10 @@ class DALIA:
 
         return marginal_variances
 
-    def get_marginal_variances_observations(
+    def get_marginal_variances_linear_predictor(
         self, theta_external: NDArray = None, x_star: NDArray = None
     ) -> NDArray:
-        """Extract the marginal variances of the observations.
+        """Extract the marginal variances of the linear predictor eta = A x.
 
         Parameters
         ----------
@@ -1252,13 +1252,13 @@ class DALIA:
         Notes
         -----
 
-        Cov(y) = Cov(Ax) = A Cov(x) A^T = A Q_selected_inv A^T
-        -> diag(Cov(y)) = diag(A Q_selected_inv A^T)
+        Cov(eta) = Cov(Ax) = A Cov(x) A^T = A Q_selected_inv A^T
+        = diag(Cov(eta)) = diag(A Q_selected_inv A^T)
 
         Returns
         -------
-        marginal_variances_observations : NDArray
-            Marginal variances of the observations.
+        marginal_variances_linear_predictor : NDArray
+            Marginal variances of the linear predictor.
         """
 
         # TODO: implement this for non-Gaussian likelihoods
@@ -1278,11 +1278,14 @@ class DALIA:
                 symmetrize=False,
             ).T
 
-            return row_quadratic_forms(self.model.a, covariance)
+            # Compute marginal variances of the linear predictor as quadratic forms of A and Sigma
+            marginal_variances = row_quadratic_forms(self.model.a, covariance)
+        else:
+            raise NotImplementedError(
+                "in get_marginal_variances_linear_predictor: Only Gaussian likelihood is currently supported."
+            )
 
-        raise NotImplementedError(
-            "in compute marginals observations: Only Gaussian likelihood is currently supported."
-        )
+        return marginal_variances
 
     def _inner_iteration(
         self,

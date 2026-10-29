@@ -54,14 +54,14 @@ def build_gst_small():
     )
 
 
-def test_serinv_marginal_variances_observations():
+def test_serinv_marginal_variances_linear_predictor():
     model = build_gst_small()
     config = dalia_config.parse_config({"solver": {"type": "serinv"}, "verbosity": 0})
     dalia = DALIA(model=model, config=config)
     dalia._evaluate_f(model.theta_internal)
     theta_external, x_star = model.theta_external, model.x.copy()
 
-    variances = dalia.get_marginal_variances_observations(theta_external, x_star)
+    variances = dalia.get_marginal_variances_linear_predictor(theta_external, x_star)
 
     A = get_host(model.a.toarray())
     Sigma = np.linalg.inv(get_host(model.Q_conditional.toarray()))
