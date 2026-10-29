@@ -1222,25 +1222,7 @@ class DALIA:
         self, theta_external: NDArray = None, x_star: NDArray = None
     ) -> NDArray:
 
-        # TODO: this should be only called by rank 0?
-        if theta_external is None and x_star is None:
-            print(
-                "Computing marginal variances for currently stored latent parameters. "
-            )
-            x_star = self.model.x
-            theta = self.model.theta_internal
-        elif theta_external is not None and x_star is not None:
-            ## assume theta to be in "external" scale
-            self.model.theta_external = xp.atleast_1d(theta_external)
-            theta = self.model.theta_internal
-
-        elif theta is None or x_star is None:
-            raise ValueError(
-                "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
-            )
-
-        check_vector_consistency(theta, comm=self.comm_world, flag="theta", verbose="Full")
-        check_vector_consistency(x_star, comm=self.comm_world, flag="x_star", verbose="Minimal")
+        theta, x_star = self._resolve_theta_and_x_star(theta_external, x_star)
 
         # check order x_star ... -> potentially need to reorder marginal variances
         self._compute_covariance_latent_parameters(theta, x_star)
@@ -1281,24 +1263,7 @@ class DALIA:
 
         # TODO: implement this for non-Gaussian likelihoods
         if self.model.is_likelihood_gaussian():
-            # TODO: this should be only called by rank 0?
-            if theta_external is None and x_star is None:
-                print(
-                    "Computing marginal variances for currently stored latent parameters. "
-                )
-                x_star = self.model.x
-                theta = self.model.theta_internal
-            elif theta_external is not None and x_star is not None:
-                ## assume theta to be in "external" scale
-                self.model.theta_external = xp.atleast_1d(theta_external)
-                theta = self.model.theta_internal
-            else:
-                raise ValueError(
-                    "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
-                )
-
-            check_vector_consistency(theta, comm=self.comm_world, flag="theta", verbose="Full")
-            check_vector_consistency(x_star, comm=self.comm_world, flag="x_star", verbose="Minimal")
+            theta, x_star = self._resolve_theta_and_x_star(theta_external, x_star)
 
             # check order x_star ... -> potentially need to reorder marginal variances
             self._compute_covariance_latent_parameters(theta, x_star)
@@ -1478,3 +1443,39 @@ class DALIA:
         log_conditional = 0.5 * logdet_Q_conditional - 0.5 * quadratic_form
 
         return log_conditional
+
+    def _resolve_theta_and_x_star(
+        self, theta_external: NDArray = None, x_star: NDArray = None
+    ) -> tuple[NDArray, NDArray]:
+        """Resolve the (internal-scale) theta and x_star used for marginal variances.
+
+        If neither is given, the currently stored latent parameters and
+        hyperparameters of the model are used. If both are given, theta is
+        assumed to be on the external scale and is rescaled to the internal one.
+
+        Returns
+        -------
+        theta_internal : NDArray
+            Hyperparameters on the internal scale.
+        x_star : NDArray
+            Latent parameters x(theta).
+        """
+        # TODO: this should be only called by rank 0?
+        if theta_external is None and x_star is None:
+            print(
+                "Computing marginal variances for currently stored latent parameters. "
+            )
+            x_star = self.model.x
+            theta = self.model.theta_internal
+        elif theta_external is not None and x_star is not None:
+            ## assume theta to be in "external" scale
+            theta = self.model.rescale_hyperparameters_to_internal(theta_external, direction="forward")
+        else:
+            raise ValueError(
+                "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
+            )
+
+        check_vector_consistency(theta, comm=self.comm_world, flag="theta", verbose="Full")
+        check_vector_consistency(x_star, comm=self.comm_world, flag="x_star", verbose="Minimal")
+
+        return theta, x_star
