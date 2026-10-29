@@ -83,10 +83,18 @@ def row_quadratic_forms(
 
     Notes
     -----
-    Eq. C.0.3 of Gaedke-Merzhaeuser (2024), Appendix C:
     .. math:: q_i = (A Sigma A^T)_ii = sum_k sum_j A_ij Sigma_jk A_ik
-    restricted to the nonzeros of row i of A. In DALIA these are the marginal
-    variances of the linear predictor when Sigma is the covariance of x.
+    restricted to the nonzeros of row i of A, Eq. (C.0.3) in [1]. In DALIA
+    these are the marginal variances of the linear predictor when Sigma is the
+    covariance of x.
+
+    References
+    ----------
+    .. [1] L. Gaedke-Merzhäuser, "A High-Performance Computing Approach to
+       Approximate Bayesian Inference", Doctoral Dissertation 2024INF009,
+       Faculty of Informatics, Università della Svizzera italiana, Lugano,
+       June 2024. Appendix C, "Marginal Variances and Matrix-Matrix
+       Multiplication", pp. 88-89.
     """
     # the kernel walks the rows of A and of Sigma by sorted column index
     a = sp.sparse.csr_matrix(a)
