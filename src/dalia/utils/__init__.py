@@ -36,7 +36,7 @@ from dalia.utils.print_utils import (
 from dalia.utils.spmatrix_utils import bdiag_tiling, extract_diagonal, memory_footprint
 from dalia.utils.print_utils import add_str_header, align_tables_side_by_side, boxify, ascii_logo
 from dalia.utils.plotting import plot_marginal_distributions_hp, plot_prior_hp
-from dalia.utils.marginal_variances import marginal_variances_linear_predictor
+from dalia.utils.quadratic_forms import row_quadratic_forms
 from .scalar_ndarray import ensure_scalar
 
 __all__ = [
@@ -64,7 +64,7 @@ __all__ = [
     "bdiag_tiling",
     "extract_diagonal",
     "memory_footprint",
-    "marginal_variances_linear_predictor",
+    "row_quadratic_forms",
     "free_unused_gpu_memory",
     "add_str_header",
     "align_tables_side_by_side",

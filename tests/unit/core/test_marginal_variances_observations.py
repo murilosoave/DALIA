@@ -11,7 +11,7 @@ from dalia.configs import dalia_config, likelihood_config, submodels_config
 from dalia.core.dalia import DALIA
 from dalia.core.model import Model
 from dalia.submodels import AR1SubModel, RegressionSubModel
-from dalia.utils import get_host, marginal_variances_linear_predictor
+from dalia.utils import get_host, row_quadratic_forms
 from tests import ATOLS, RTOLS
 
 N = 20
@@ -78,9 +78,8 @@ def build_model(path):
 def test_kernel_matches_dense_product():
     A, Sigma = random_inputs()
     upper = sp.sparse.csr_matrix(xp.asarray(np.triu(Sigma)))
-    upper.sort_indices()
 
-    variances = marginal_variances_linear_predictor(sp.sparse.csr_matrix(A), upper)
+    variances = row_quadratic_forms(sp.sparse.csr_matrix(A), upper)
 
     reference = np.einsum("ij,jk,ik->i", A.toarray(), Sigma, A.toarray())
     np.testing.assert_allclose(get_host(variances), reference, rtol=1e-12, atol=1e-12)
@@ -92,7 +91,7 @@ def test_kernel_raises_on_a_missing_covariance_entry():
     diagonal = sp.sparse.csr_matrix(xp.asarray(np.diag(np.diag(Sigma))))
 
     with pytest.raises(ValueError):
-        marginal_variances_linear_predictor(sp.sparse.csr_matrix(A), diagonal)
+        row_quadratic_forms(sp.sparse.csr_matrix(A), diagonal)
 
 
 @pytest.mark.parametrize("solver", ["dense", "scipy"])

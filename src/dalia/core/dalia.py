@@ -21,7 +21,7 @@ from dalia.utils import (
     free_unused_gpu_memory,
     get_device,
     get_host,
-    marginal_variances_linear_predictor,
+    row_quadratic_forms,
     memory_report,
     print_msg,
     set_device,
@@ -1270,22 +1270,15 @@ class DALIA:
 
             # The entries (j, k) of the covariance needed for diag(A Q_selected_inv A^T)
             # are in the sparsity pattern of Q_conditional. The covariance is
-            # symmetric, so only its lower triangle is extracted.
+            # symmetric, so only its lower triangle is extracted; its transpose
+            # is the upper triangle expected by the kernel.
             covariance = self.solver._structured_to_spmatrix(
                 sp.sparse.tril(self.model.Q_conditional),
                 sparsity="bta",
                 symmetrize=False,
-            )
+            ).T
 
-            # the transpose of the lower triangle is the upper triangle, in csr
-            covariance = sp.sparse.csr_matrix(covariance.T)
-            covariance.sort_indices()
-
-            a = sp.sparse.csr_matrix(self.model.a)
-            a.sum_duplicates()
-            a.sort_indices()
-
-            return marginal_variances_linear_predictor(a, covariance)
+            return row_quadratic_forms(self.model.a, covariance)
 
         raise NotImplementedError(
             "in compute marginals observations: Only Gaussian likelihood is currently supported."
