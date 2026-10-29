@@ -1,6 +1,6 @@
-# Marginal variances of the observations with the serinv solver, whose selected
-# inverse is read from its lower triangle: compared against a dense inverse on
-# the gst_small example.
+# Marginal variances of the linear predictor, diag(A Sigma A^T), computed by
+# DALIA from the selected inverse of the serinv solver (read from its lower
+# triangle) and compared against a dense inverse on the gst_small example.
 
 from pathlib import Path
 
@@ -54,7 +54,7 @@ def build_gst_small():
     )
 
 
-def test_serinv_marginal_variances_linear_predictor():
+def test_marginal_variances_linear_predictor_matches_dense_inverse():
     model = build_gst_small()
     config = dalia_config.parse_config({"solver": {"type": "serinv"}, "verbosity": 0})
     dalia = DALIA(model=model, config=config)
@@ -65,7 +65,7 @@ def test_serinv_marginal_variances_linear_predictor():
 
     A = get_host(model.a.toarray())
     Sigma = np.linalg.inv(get_host(model.Q_conditional.toarray()))
-    reference = np.einsum("ij,jk,ik->i", A, Sigma, A)
+    reference = np.diag(A @ Sigma @ A.T)
     np.testing.assert_allclose(
         get_host(variances), reference, rtol=RTOLS["relaxed"], atol=ATOLS["relaxed"]
     )
