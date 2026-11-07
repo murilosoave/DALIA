@@ -6,6 +6,7 @@ import numpy as np
 from tabulate import tabulate
 
 from dalia import ArrayLike, NDArray, sp, xp
+from dalia.configs.constraints_config import ConstraintConfig
 from dalia.configs.models_config import CoregionalModelConfig
 from dalia.core.model import Model
 from dalia.core.prior_hyperparameters import PriorHyperparameters
@@ -31,16 +32,24 @@ class CoregionalModel(Model):
         self,
         models: list[Model],
         coregional_model_config: CoregionalModelConfig,
+        constraints: list[ConstraintConfig] = None,
         **kwargs,
     ) -> None:
-        """Initializes the model."""
-        if kwargs.get("constraints") or any(model.C is not None for model in models):
-            raise NotImplementedError(
-                "Linear constraints are not implemented for the CoregionalModel."
-            )
-        self.C = None
-        self.e = None
+        """Initializes the model.
 
+        Parameters
+        ----------
+        models : list[Model]
+            One Model per variate. Their own constraints (declared in their
+            submodels or on the Model) act on their block of the latent field.
+        coregional_model_config : CoregionalModelConfig
+            Configuration of the coregionalization.
+        constraints : list[ConstraintConfig]
+            Linear constraints on the whole latent field. Their columns follow the
+            stacked order (variate 1 block, variate 2 block, ...), each block in
+            the final latent order of its Model; the permutation of the latent
+            variables is applied internally.
+        """
         self.models: list[Model] = models
 
         # Check the coregionalization type (Spacial or SpatioTemporal)
@@ -266,6 +275,12 @@ class CoregionalModel(Model):
 
             self.a = self.a[:, self.permutation_latent_variables]
             self.x = self.x[self.permutation_latent_variables]
+
+        # --- Linear constraints C x = e from the variates and the coregional model
+        self.C, self.e = self.construct_constraints(constraints)
+        for model in self.models:
+            model.C = None
+            model.e = None
 
         # self.inverse_permutation_latent_variables = xp.argsort(self.permutation_latent_variables)
         # self.perm2 = self._generate_permutation_indices_for_a_new(
@@ -1055,3 +1070,63 @@ class CoregionalModel(Model):
     def total_number_fixed_effects(self) -> int:
         """Get the number of fixed effects."""
         return self.n_fixed_effects_per_model * self.n_models
+
+    def construct_constraints(self, constraints: list[ConstraintConfig] = None) -> tuple:
+        """Combine the constraints of the variates and of the coregional model into
+        C x = e, in the internal (permuted) order of the latent variables.
+
+        Parameters
+        ----------
+        constraints : list[ConstraintConfig]
+            Coregional-level constraints, acting on the whole latent field in the
+            stacked order (variate 1 block, variate 2 block, ...).
+
+        Returns
+        -------
+        C : NDArray
+            Constraint matrix of shape (k, n_latent_parameters), None without constraints.
+        e : NDArray
+            Right-hand side of shape (k,), None without constraints.
+
+        Notes
+        -----
+        Each variate's Model already built its constraints on its own latent
+        parameters; they are placed at the columns of its block in the stacked
+        order. The coregional-level constraints are given in the stacked order too.
+        The rows are stacked: variates first, in order, then the coregional-level
+        constraints. The columns are then permuted like a and x, so that C x in the
+        internal order equals the constraint written in the stacked order.
+        """
+        C_rows = []
+        e_rows = []
+
+        for i, model in enumerate(self.models):
+            if model.C is None:
+                continue
+
+            C = xp.zeros((model.C.shape[0], self.n_latent_parameters), dtype=xp.float64)
+            C[:, self.latent_parameters_idx[i] : self.latent_parameters_idx[i + 1]] = (
+                model.C
+            )
+
+            C_rows.append(C)
+            e_rows.append(model.e)
+
+        for constraint in constraints or []:
+            C, e = constraint.build(self.n_latent_parameters)
+            C_rows.append(C)
+            e_rows.append(e)
+
+        if len(C_rows) == 0:
+            return None, None
+
+        C = xp.concatenate(C_rows, axis=0)[:, self.permutation_latent_variables]
+        e = xp.concatenate(e_rows)
+
+        if xp.linalg.matrix_rank(C) < C.shape[0]:
+            raise ValueError(
+                "The combined constraints C must have full row rank: some constraints "
+                "are redundant or conflicting."
+            )
+
+        return C, e
