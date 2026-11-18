@@ -218,7 +218,6 @@ def gstcoreg2_itest():
 
     # Compare latent parameters
     x_ref = np.load(f"{EXAMPLE_PATH}/inputs_nv{nv}_ns{ns}_nt{nt}_nb{nb}/reference_outputs/x_ref.npy")
-    x_ref = x_ref[dalia.model.permutation_latent_variables]
     print(f"x_ref: {x_ref}")
     print(f"x_dalia: {get_host(results['x'])}")
     print_msg(

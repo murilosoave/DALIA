@@ -423,3 +423,90 @@ def test_dalia_matches_dense_reference_on_constrained_spatio_temporal_coregional
     np.testing.assert_allclose(np.diff(f), np.diff(f_ref), rtol=1e-8)
     np.testing.assert_allclose(x_dalia, x_ref[-1], rtol=1e-8, atol=1e-10)
     np.testing.assert_allclose(C_stacked @ x_dalia, e, atol=1e-10)
+
+
+# --- Latent results cross the public boundary in the stacked order
+
+
+def test_coregional_inverse_permutation_undoes_the_latent_permutation():
+    for model in (
+        coregional_model([spatial_variate(1), spatial_variate(2)]),
+        coregional_model([coregional_variate(1), coregional_variate(2)]),
+    ):
+        x_stacked = np.arange(model.n_latent_parameters, dtype=float)
+        x_internal = stacked_to_internal(model, x_stacked)
+
+        np.testing.assert_array_equal(
+            x_internal[np.asarray(model.inverse_permutation_latent_variables)], x_stacked
+        )
+
+
+def test_minimize_returns_latent_mean_in_stacked_order():
+    """The row tying the two intercepts is written in the stacked order: the
+    returned mean satisfies it as written, without any reordering by the caller."""
+    ns = 1818
+    row = np.zeros(2 * ns + 2)
+    row[ns], row[2 * ns + 1] = 1.0, -1.0  # intercepts, stacked order
+    model = coregional_model(
+        [spatial_variate(1), spatial_variate(2)],
+        constraints=[{"type": "linear", "C": [row.tolist()], "e": [0.7]}],
+    )
+    config = dalia_config.parse_config(
+        {"solver": {"type": "dense"}, "verbosity": 0, "minimize": {"max_iter": 1}}
+    )
+
+    x = np.asarray(DALIA(model=model, config=config).minimize()["x"])
+
+    np.testing.assert_allclose(row @ x, 0.7, atol=1e-10)
+    np.testing.assert_array_equal(stacked_to_internal(model, x), np.asarray(model.x))
+
+
+def test_marginal_variances_latent_take_and_return_stacked_order():
+    model = coregional_model([coregional_variate(1), coregional_variate(2)])
+    dalia = DALIA(model=model, config=make_dalia_config())
+    x_stacked = np.linspace(-1.0, 1.0, model.n_latent_parameters)
+
+    variances = np.asarray(
+        dalia.get_marginal_variances_latent_parameters(
+            model.theta_external.copy(), xp.asarray(x_stacked)
+        )
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(model.x), stacked_to_internal(model, x_stacked)
+    )
+    Q_conditional = model.construct_Q_conditional(model.a @ model.x)
+    variances_internal = np.diag(np.linalg.inv(np.asarray(Q_conditional.toarray())))
+    to_stacked = np.argsort(np.asarray(model.permutation_latent_variables))
+    np.testing.assert_allclose(variances, variances_internal[to_stacked], rtol=1e-8)
+
+
+def test_marginal_variances_latent_of_the_stored_mean_are_in_stacked_order():
+    """Without arguments the stored (internal) mean is used as it is; the variances
+    still come back in the stacked order."""
+    model = coregional_model([spatial_variate(1), spatial_variate(2)])
+    dalia = DALIA(model=model, config=make_dalia_config())
+    x_internal = np.linspace(-1.0, 1.0, model.n_latent_parameters)
+    model.x[:] = xp.asarray(x_internal)
+
+    variances = np.asarray(dalia.get_marginal_variances_latent_parameters())
+
+    np.testing.assert_array_equal(np.asarray(model.x), x_internal)
+    Q_conditional = model.construct_Q_conditional(model.a @ model.x)
+    variances_internal = np.diag(np.linalg.inv(np.asarray(Q_conditional.toarray())))
+    to_stacked = np.argsort(np.asarray(model.permutation_latent_variables))
+    np.testing.assert_allclose(variances, variances_internal[to_stacked], rtol=1e-8)
+
+
+def test_marginal_variances_observations_take_latent_mean_in_stacked_order():
+    model = coregional_model([spatial_variate(1), spatial_variate(2)])
+    dalia = DALIA(model=model, config=make_dalia_config())
+    x_stacked = np.linspace(-1.0, 1.0, model.n_latent_parameters)
+
+    dalia.get_marginal_variances_observations(
+        model.theta_external.copy(), xp.asarray(x_stacked)
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(model.x), stacked_to_internal(model, x_stacked)
+    )

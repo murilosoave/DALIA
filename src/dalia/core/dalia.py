@@ -394,7 +394,8 @@ class DALIA:
         Returns
         -------
         minimization_result : scipy.optimize.OptimizeResult
-            Result of the optimization procedure.
+            Result of the optimization procedure. The latent parameters "x" are in
+            the order in which the latent variables were declared.
         """
         # Ensure that all ranks are initialized to the same theta
         check_vector_consistency(
@@ -411,7 +412,7 @@ class DALIA:
             self.minimization_result: dict = {
                 "theta_internal": copy.deepcopy(self.model.theta_internal),
                 "theta": copy.deepcopy(self.model.theta_external),
-                "x": copy.deepcopy(self.model.x),  # [self.model.inverse_permutation_latent_variables],
+                "x": self.model.latent_to_user_order(self.model.x),
                 "f": copy.deepcopy(self.f_value),
                 "grad_f": [],
                 "f_values": [],
@@ -471,7 +472,7 @@ class DALIA:
                             "theta_internal": copy.deepcopy(self.model.theta_internal),
                             "theta":
                                 copy.deepcopy(self.model.theta_external),
-                            "x": copy.deepcopy(self.model.x),
+                            "x": self.model.latent_to_user_order(self.model.x),
                             "f": copy.deepcopy(fun_i),
                             "grad_f": copy.deepcopy(self.gradient_f),
                             "f_values": self.f_values,
@@ -507,12 +508,7 @@ class DALIA:
                             "theta_internal": get_host(self.model.theta_internal),
                             "theta": get_host(
                                 self.model.theta_external),
-                            "x": get_host(
-                                self.model.x
-                                # self.model.x[
-                                #     self.model.inverse_permutation_latent_variables
-                                # ]
-                            ),
+                            "x": get_host(self.model.latent_to_user_order(self.model.x)),
                             "f": copy.deepcopy(fun_i),
                             "grad_f": copy.deepcopy(self.gradient_f),
                             "f_values": copy.deepcopy(self.f_values),
@@ -568,7 +564,7 @@ class DALIA:
             self.minimization_result: dict = {
                 "theta_internal": copy.deepcopy(self.model.theta_internal), #  scipy_result.x, #
                 "theta": copy.deepcopy(self.model.theta_external),
-                "x": copy.deepcopy(self.model.x),  # [self.model.inverse_permutation_latent_variables]
+                "x": self.model.latent_to_user_order(self.model.x),
                 "f": copy.deepcopy(scipy_result.fun),
                 "grad_f": copy.deepcopy(self.gradient_f),
                 "f_values": copy.deepcopy(self.f_values),
@@ -1261,6 +1257,26 @@ class DALIA:
     def get_marginal_variances_latent_parameters(
         self, theta_external: NDArray = None, x_star: NDArray = None
     ) -> NDArray:
+        """Extract the marginal variances of the latent parameters.
+
+        Parameters
+        ----------
+        theta_external : NDArray
+            Hyperparameters theta, in the external scale.
+        x_star : NDArray
+            Latent parameters x(theta), in the order in which the latent variables
+            were declared (as returned by run() and minimize()).
+
+        Returns
+        -------
+        marginal_variances_latent : NDArray
+            Marginal variances of the latent parameters, in the same order as x_star.
+
+        Notes
+        -----
+        Without arguments, the hyperparameters and latent parameters currently
+        stored in the model are used.
+        """
 
         # TODO: this should be only called by rank 0?
         if theta_external is None and x_star is None:
@@ -1273,6 +1289,7 @@ class DALIA:
             ## assume theta to be in "external" scale
             self.model.theta_external = xp.atleast_1d(theta_external)
             theta = self.model.theta_internal
+            x_star = self.model.latent_to_internal_order(x_star)
 
         elif theta is None or x_star is None:
             raise ValueError(
@@ -1294,8 +1311,10 @@ class DALIA:
         marginal_variances = extract_diagonal(marginal_variances_sp)
 
         # The solver still holds the Q_c factor after the selected inversion
-        return self.update_constrained_variance(
-            variances=marginal_variances, sparsity="bta"
+        return self.model.latent_to_user_order(
+            self.update_constrained_variance(
+                variances=marginal_variances, sparsity="bta"
+            )
         )
 
     def get_marginal_variances_observations(
@@ -1308,7 +1327,8 @@ class DALIA:
         theta_i : NDArray
             Hyperparameters theta.
         x_star : NDArray
-            Latent parameters x(theta_i).
+            Latent parameters x(theta_i), in the order in which the latent variables
+            were declared (as returned by run() and minimize()).
 
         Notes
         -----
@@ -1335,10 +1355,13 @@ class DALIA:
                 x_star = self.model.x
                 theta_external = self.model.theta_external
 
-            if theta_external is None or x_star is None:
+            elif theta_external is None or x_star is None:
                 raise ValueError(
                     "BOTH or NEITHER theta and x_star must be provided to compute the marginal variances."
                 )
+
+            else:
+                x_star = self.model.latent_to_internal_order(x_star)
 
                 # check order x_star ... -> potentially need to reorder marginal variances
             self._compute_covariance_latent_parameters(theta_external, x_star)

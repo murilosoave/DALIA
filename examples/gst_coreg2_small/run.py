@@ -229,10 +229,15 @@ if __name__ == "__main__":
     print_msg("results['theta']: ", results["theta"])
 
     print_msg("Internal Covariance of theta:\n", results["cov_theta_internal"])
-    print_msg("mean of the fixed effects: ", results["x"][-nb:])
+    # Latent results are in the stacked order:
+    # [field 1, fixed effects 1, field 2, fixed effects 2, ...]
+    print_msg(
+        "mean of the fixed effects: ",
+        results["x"].reshape(nv, -1)[:, ns * nt :].ravel(),
+    )
     print_msg(
         "marginal variances of the fixed effects: ",
-        results["marginal_variances_latent"][-nb:],
+        results["marginal_variances_latent"].reshape(nv, -1)[:, ns * nt :].ravel(),
     )
 
     print_msg("\n--- Comparisons ---")
@@ -249,7 +254,6 @@ if __name__ == "__main__":
     x_ref = np.load(f"{BASE_DIR}/inputs_nv{nv}_ns{ns}_nt{nt}_nb{nb}/reference_outputs/x_ref.npy")
     #x_ref = np.loadtxt(f"{BASE_DIR}/inputs_nv{nv}_ns{ns}_nt{nt}_nb{nb}/reference_outputs/x_ref_8498_1.dat")
     #np.save(f"{BASE_DIR}/inputs_nv{nv}_ns{ns}_nt{nt}_nb{nb}/reference_outputs/x_ref.npy", x_ref)
-    x_ref = x_ref[dalia.model.permutation_latent_variables]
     
     # Compare latent parameters
     print_msg(
@@ -262,10 +266,13 @@ if __name__ == "__main__":
     Qconditional = dalia.model.construct_Q_conditional(
         eta=coreg_model.a @ coreg_model.x
     )
-    Qinv_ref = xp.linalg.inv(Qconditional.toarray())
+    # Q_conditional is in the internal order of the model
+    var_latent_ref = xp.diag(xp.linalg.inv(Qconditional.toarray()))[
+        dalia.model.inverse_permutation_latent_variables
+    ]
     print_msg(
         "Norm (marg var latent - ref):    ",
-        f"{xp.linalg.norm(var_latent_params - xp.diag(Qinv_ref)):.4e}",
+        f"{xp.linalg.norm(var_latent_params - var_latent_ref):.4e}",
     )
 
     # Compare marginal variances of observations

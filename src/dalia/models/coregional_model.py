@@ -282,7 +282,11 @@ class CoregionalModel(Model):
             model.C = None
             model.e = None
 
-        # self.inverse_permutation_latent_variables = xp.argsort(self.permutation_latent_variables)
+        # Results are returned in the stacked order (variate 1 block, variate 2 block, ...)
+        self.inverse_permutation_latent_variables = xp.argsort(
+            xp.asarray(self.permutation_latent_variables)
+        )
+
         # self.perm2 = self._generate_permutation_indices_for_a_new(
         #     self.n_temporal_nodes,
         #     self.n_spatial_nodes,

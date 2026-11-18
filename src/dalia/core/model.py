@@ -981,3 +981,13 @@ class Model(ABC):
     def total_number_fixed_effects(self) -> int:
         """Get the number of fixed effects."""
         return self.n_fixed_effects
+
+    def latent_to_user_order(self, values: NDArray) -> NDArray:
+        """Copy of a vector indexed by the latent variables, from the internal order
+        of the model to the order in which the user declared the latent variables."""
+        return values[self.inverse_permutation_latent_variables]
+
+    def latent_to_internal_order(self, values: NDArray) -> NDArray:
+        """Copy of a vector indexed by the latent variables, from the order in which
+        the user declared the latent variables to the internal order of the model."""
+        return values[self.permutation_latent_variables]
