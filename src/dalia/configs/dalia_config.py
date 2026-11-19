@@ -21,9 +21,6 @@ class SolverConfig(BaseModel):
     # Tile size in elements (-1 lets sTiles choose).
     stiles_tile_size: int = -1
     # Tile storage mode ("auto" lets sTiles pick dense/semisparse/sparse tiles).
-    # "sparse" is the only mode without the multithreaded non-determinism of
-    # libstiles (see stiles_issue/ISSUE.md) but, from Version_2026.10.19, it
-    # fails on matrices that fit in a single tile (n <= stiles_tile_size).
     stiles_tile_mode: Literal["auto", "dense", "semisparse", "sparse"] = "auto"
 
 
