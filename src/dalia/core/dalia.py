@@ -16,12 +16,12 @@ from dalia.utils import (
     allreduce,
     ascii_logo,
     boxify,
+    diag_a_sigma_at,
     extract_diagonal,
     format_size,
     free_unused_gpu_memory,
     get_device,
     get_host,
-    row_quadratic_forms,
     memory_report,
     print_msg,
     set_device,
@@ -1279,7 +1279,7 @@ class DALIA:
             ).T
 
             # Compute marginal variances of the linear predictor as quadratic forms of A and Sigma
-            marginal_variances = row_quadratic_forms(self.model.a, covariance)
+            marginal_variances = diag_a_sigma_at(self.model.a, covariance)
         else:
             raise NotImplementedError(
                 "in get_marginal_variances_linear_predictor: Only Gaussian likelihood is currently supported."

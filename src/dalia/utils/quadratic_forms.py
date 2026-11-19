@@ -60,7 +60,7 @@ else:
             )
 
 
-def row_quadratic_forms(
+def diag_a_sigma_at(
     a: sp.sparse.spmatrix, sigma: sp.sparse.spmatrix
 ) -> NDArray:
     """Quadratic forms a_i^T Sigma a_i of the rows a_i of A, i.e. diag(A Sigma A^T).

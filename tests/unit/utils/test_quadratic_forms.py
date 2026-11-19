@@ -7,7 +7,7 @@ import pytest
 import scipy.sparse as sps
 
 from dalia import sp, xp
-from dalia.utils import get_host, row_quadratic_forms
+from dalia.utils import diag_a_sigma_at, get_host
 
 
 def random_inputs(m=40, n=15):
@@ -23,21 +23,21 @@ def random_inputs(m=40, n=15):
     return A, B @ B.T + n * np.eye(n)
 
 
-def test_row_quadratic_forms_match_dense_product():
+def test_diag_a_sigma_at_matches_dense_product():
     A, Sigma = random_inputs()
     upper = sp.sparse.csr_matrix(xp.asarray(np.triu(Sigma)))
 
-    forms = row_quadratic_forms(sp.sparse.csr_matrix(A), upper)
+    forms = diag_a_sigma_at(sp.sparse.csr_matrix(A), upper)
 
     A = A.toarray()
     reference = np.diag(A @ Sigma @ A.T)
     np.testing.assert_allclose(get_host(forms), reference, rtol=1e-12, atol=1e-12)
 
 
-def test_row_quadratic_forms_raise_on_a_missing_entry():
+def test_diag_a_sigma_at_raises_on_a_missing_entry():
     A, Sigma = random_inputs()
     # only the diagonal of Sigma is stored, the rows of A need off-diagonal entries
     diagonal = sp.sparse.csr_matrix(xp.asarray(np.diag(np.diag(Sigma))))
 
     with pytest.raises(ValueError):
-        row_quadratic_forms(sp.sparse.csr_matrix(A), diagonal)
+        diag_a_sigma_at(sp.sparse.csr_matrix(A), diagonal)
