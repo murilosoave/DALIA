@@ -61,7 +61,6 @@ if __name__ == "__main__":
         "minimize": {
             "max_iter": args.max_iter,
             "gtol": 1e-3,
-            "disp": True,
         },
         "inner_iteration_max_iter": 50,
         "eps_inner_iteration": 1e-3,

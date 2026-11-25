@@ -29,7 +29,6 @@ class BFGSConfig(BaseModel):
     gtol: float = 1e-1
     # c1: float = 1e-4  # only relevant for BFGS not for L-BFGS-B
     # c2: float = 0.9  # only relevant for BFGS not for L-BFGS-B
-    disp: bool = False
 
 
 class DaliaConfig(BaseModel):

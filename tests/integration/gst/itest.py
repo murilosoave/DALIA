@@ -61,7 +61,6 @@ def gst_itest():
         "minimize": {
             "max_iter": 100, 
             "gtol": 1e-3, 
-            "disp": True,
         },
         "f_reduction_tol": 1e-4,
         "theta_reduction_tol": 1e-4,

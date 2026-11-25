@@ -82,7 +82,6 @@ if __name__ == "__main__":
         "minimize": {
             "max_iter": 100,
             "gtol": 1e-3,
-            "disp": True,
             "maxcor": len(model.theta_external),
         },
         "f_reduction_tol": 1e-3,

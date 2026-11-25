@@ -511,7 +511,6 @@ class DALIA:
                         "maxcor": self.config.minimize.maxcor,
                         "maxls": self.config.minimize.maxls,
                         "gtol": self.config.minimize.gtol,
-                        "disp": self.config.minimize.disp,
                         "ftol": 1e-22,
                     },
                     callback=callback,

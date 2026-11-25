@@ -71,7 +71,6 @@ if __name__ == "__main__":
         "minimize": {
             "max_iter": args.max_iter, 
             "gtol": 1e-3, 
-            "disp": True,
         },
         "f_reduction_tol": 1e-4,
         "theta_reduction_tol": 1e-4,

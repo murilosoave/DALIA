@@ -14,7 +14,7 @@ from dalia.core.dalia import DALIA
 from dalia.core.model import Model
 from dalia.models import CoregionalModel
 from dalia.submodels import RegressionSubModel, SpatialSubModel
-from dalia.utils import get_host, print_msg
+from dalia.utils import get_host, print_msg, extract_diagonal
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -197,7 +197,6 @@ if __name__ == "__main__":
         "minimize": {
             "max_iter": args.max_iter,
             "gtol": 1e-3,
-            "disp": True,
         },
         "inner_iteration_max_iter": 50,
         "eps_inner_iteration": 1e-3,
@@ -256,11 +255,11 @@ if __name__ == "__main__":
     )
 
     # Compare marginal variances of observations
-    # var_obs = dalia.get_marginal_variances_linear_predictor(theta=theta_ref, x_star=x_ref)
-    # var_obs_ref = extract_diagonal(model.a @ Qinv_ref @ model.a.T)
-    # print_msg(
-    #     "Norm (var_obs - var_obs_ref):    ",
-    #     f"{xp.linalg.norm(var_obs - var_obs_ref):.4e}",
-    # )
+    var_obs = dalia.get_marginal_variances_linear_predictor(theta_external=theta_ref, x_star=x_ref)
+    var_obs_ref = extract_diagonal(coreg_model.a @ Qinv_ref @ coreg_model.a.T)
+    print_msg(
+        "Norm (var_obs - var_obs_ref):    ",
+        f"{xp.linalg.norm(var_obs - var_obs_ref):.4e}",
+    )
 
     print_msg("\n--- Finished ---")

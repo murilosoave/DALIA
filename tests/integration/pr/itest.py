@@ -39,7 +39,6 @@ def pr_itest():
         "minimize": {
             "max_iter": 100,
             "gtol": 1e-1,
-            "disp": True,
         },
         "inner_iteration_max_iter": 50,
         "eps_inner_iteration": 1e-3,
