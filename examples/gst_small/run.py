@@ -11,7 +11,7 @@ from dalia.configs import likelihood_config, dalia_config, submodels_config
 from dalia.core.model import Model
 from dalia.core.dalia import DALIA
 from dalia.submodels import RegressionSubModel, SpatioTemporalSubModel
-from dalia.utils import get_host, print_msg, plot_marginal_distributions_hp
+from dalia.utils import get_host, print_msg, plot_marginal_distributions_hp, extract_diagonal
 from examples_utils.parser_utils import parse_args
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -75,7 +75,6 @@ if __name__ == "__main__":
         "minimize": {
             "max_iter": args.max_iter,
             "gtol": 1e-3,
-            "disp": True,
             "maxcor": len(model.theta_external),
         },
         "f_reduction_tol": 1e-3,
@@ -121,6 +120,14 @@ if __name__ == "__main__":
     print_msg(
         "Norm (marg var latent - ref):    ",
         f"{np.linalg.norm(var_latent_params - get_host(xp.diag(Qinv_ref))):.4e}",
+    )
+
+    # Compare marginal variances of observations
+    var_obs_ref = extract_diagonal(model.a @ Qinv_ref @ model.a.T)
+    var_obs = dalia.get_marginal_variances_linear_predictor(theta_external=dalia.theta_star, x_star=dalia.x_star)
+    print_msg(
+        "Norm (var_obs - var_obs_ref):    ",
+        f"{xp.linalg.norm(var_obs - var_obs_ref):.4e}",
     )
 
     print_msg("\n--- Marginal distributions of the hyperparameters ---")
